@@ -69,6 +69,14 @@ npm start
 In the app, set the server URL and the product UUID the seed printed,
 then paste the license key and activate.
 
+**[How it works](docs/how-it-works.md)** walks through each part - the
+SDK calls behind it, and why - and what to change to take it into your own
+app.
+
+**Want the vendor side** - issuing and revoking licenses, connecting your
+own storefront? A [hosted account](https://casazium.com/pricing) on the
+Free plan is enough, and you can point this app at it.
+
 ## Where the licensing is
 
 - [`main/licensing.js`](main/licensing.js) - all of it: activation, the
