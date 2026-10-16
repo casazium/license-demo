@@ -3,7 +3,7 @@
 // and is treated as untrusted (anyone can open its dev tools).
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, net, session, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, net, session, shell } from 'electron';
 import { CasaziumLicenseClient } from '@casazium/license-sdk';
 import { createLicensing } from './licensing.js';
 import { createRecordingFetch } from './calls.js';
@@ -198,6 +198,17 @@ app.on('web-contents-created', (_event, contents) => {
   });
   contents.on('will-navigate', (event, url) => {
     if (url !== INDEX_URL) event.preventDefault();
+  });
+  // Electron has no right-click menu of its own: without this, pasting a
+  // key with the mouse doesn't work. Built from Electron's standard roles,
+  // so it gives the page nothing new.
+  contents.on('context-menu', (_event, params) => {
+    const template = params.isEditable
+      ? [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { type: 'separator' }, { role: 'selectAll' }]
+      : params.selectionText
+        ? [{ role: 'copy' }]
+        : [];
+    if (template.length) Menu.buildFromTemplate(template).popup();
   });
 });
 
