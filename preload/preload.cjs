@@ -21,6 +21,15 @@ contextBridge.exposeInMainWorld('licensing', {
   trackUsage: call('licensing:trackUsage'),
 });
 
+contextBridge.exposeInMainWorld('demo', {
+  loadSeed: call('seed:load'),
+  seed: call('seed:summary'),
+  keyMatchesServer: call('seed:keyMatchesServer'),
+  applySeed: call('seed:apply'),
+  tryKey: call('demo:try'),
+  getKey: call('demo:getKey'),
+});
+
 contextBridge.exposeInMainWorld('app', {
   getSettings: call('settings:get'),
   saveSettings: call('settings:set'),

@@ -39,6 +39,7 @@ const licensing = createLicensing({
   state,
   settings: () => settings.get(),
   instanceId: () => appInstanceId(settings.get().productUuid),
+  fetch: recordingFetch,
 });
 
 // A server URL must be https, except for a server on this machine.
@@ -93,13 +94,35 @@ handle('licensing:exportOffline', () => licensing.exportOffline());
 handle('licensing:verifyOffline', () => licensing.verifyOffline());
 handle('licensing:usage', () => licensing.usage());
 handle('licensing:trackUsage', () => licensing.trackUsage('api_calls_per_day'));
+handle('seed:load', () => licensing.loadSeed());
+handle('seed:summary', () => licensing.seedSummary());
+handle('seed:keyMatchesServer', () => licensing.seedKeyMatchesServer());
+handle('demo:try', (kind) => licensing.tryDemoKey(String(kind)));
+// Points the app at the server the seed describes.
+handle('seed:apply', () => {
+  const seed = licensing.seedSummary();
+  if (!seed) throw new Error('No seed.json loaded');
+  if (!validServerUrl(seed.serverUrl)) throw new Error("seed.json's server URL isn't https");
+  const previous = settings.get();
+  settings.replace({ ...previous, serverUrl: seed.serverUrl, productUuid: seed.productUuid });
+  if (previous.serverUrl !== seed.serverUrl) state.update({ publicKey: null, offlineFile: null });
+  return settings.get();
+});
+handle('demo:getKey', () => {
+  const url = licensing.seedSummary()?.getKeyUrl;
+  if (!url) throw new Error('This demo server has no purchase link');
+  if (!openExternal(url)) throw new Error('The purchase link is not on the allowed list');
+  return true;
+});
 handle('settings:get', () => settings.get());
 handle('settings:set', (next) => {
   const serverUrl = String(next?.serverUrl ?? '').trim();
   const productUuid = String(next?.productUuid ?? '').trim();
+  const helperUrl = String(next?.helperUrl ?? '').trim();
   if (!validServerUrl(serverUrl)) throw new Error('The server URL must be https (http only for localhost)');
+  if (helperUrl && !validServerUrl(helperUrl)) throw new Error('The demo helper URL must be https (http only for localhost)');
   const previous = settings.get();
-  settings.replace({ ...DEFAULT_SETTINGS, serverUrl, productUuid });
+  settings.replace({ ...DEFAULT_SETTINGS, serverUrl, productUuid, helperUrl });
   // A different server has a different public key and different licenses.
   if (previous.serverUrl !== serverUrl) state.update({ publicKey: null, offlineFile: null });
   return settings.get();

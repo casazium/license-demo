@@ -20,6 +20,11 @@ acts as other computers would: a second machine taking the other seat,
 a third refused at the limit, and this machine's seat freed from
 somewhere else - which the launch check catches with `validate()`.
 
+Pointed at the Casazium demo server, a **Demo keys** panel also checks
+keys you can't make yourself - revoked, expired, a higher tier - online
+and against their offline files, without activating them; and **Get a
+demo key** gets you a key of your own from a test purchase.
+
 If the server's signing key ever changes, the app says so: offline
 license files signed with the old key stop verifying, and an
 unexpected change can mean a different server.

@@ -28,6 +28,9 @@ export const DEFAULT_SETTINGS = {
   // The demo server once it exists; a local server until then.
   serverUrl: 'http://localhost:3001/v1',
   productUuid: '',
+  // The demo server's helper, which publishes seed.json. Empty for any
+  // other server.
+  helperUrl: '',
 };
 export const settings = jsonFile('settings.json', DEFAULT_SETTINGS);
 

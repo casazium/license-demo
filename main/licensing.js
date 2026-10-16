@@ -10,6 +10,7 @@
 //                    alone, when the server can't be reached
 //   deactivate()   - frees this machine's seat, so the key can move
 
+import crypto from 'node:crypto';
 import { classifyError } from './calls.js';
 
 /**
@@ -19,9 +20,10 @@ import { classifyError } from './calls.js';
  * @param {object} deps.state - { get(): object, update(patch) } for non-secret data
  * @param {() => {serverUrl: string, productUuid: string}} deps.settings
  * @param {() => string} deps.instanceId - this machine's id for this app
+ * @param {typeof fetch} [deps.fetch] - for the demo helper's seed.json
  * @param {() => number} [deps.now]
  */
-export function createLicensing({ createClient, secrets, state, settings, instanceId, now = () => Date.now() }) {
+export function createLicensing({ createClient, secrets, state, settings, instanceId, fetch = globalThis.fetch, now = () => Date.now() }) {
   const client = () => createClient({ baseUrl: settings().serverUrl });
   const productUuid = () => settings().productUuid;
 
@@ -210,7 +212,85 @@ export function createLicensing({ createClient, secrets, state, settings, instan
     };
   }
 
+  // --- The demo server's seed (seed.json) -----------------------------
+  // The demo helper publishes keys a visitor can't create on their own -
+  // revoked, expired, a higher tier - with offline files exported before
+  // they were revoked or backdated. They're only ever verified, never
+  // activated: they're shared by everyone trying the demo.
+
+  async function loadSeed() {
+    const helperUrl = settings().helperUrl;
+    if (!helperUrl) {
+      state.update({ seed: null });
+      return { loaded: false, reason: 'no_helper' };
+    }
+    const res = await fetch(`${helperUrl.replace(/\/$/, '')}/seed.json`);
+    if (!res.ok) throw Object.assign(new Error(`seed.json: the demo helper answered ${res.status}`), { status: res.status });
+    const seed = await res.json();
+    if (typeof seed?.server_url !== 'string' || typeof seed?.product_uuid !== 'string' || typeof seed?.keys !== 'object') {
+      throw new Error("seed.json isn't in the expected shape");
+    }
+    state.update({ seed });
+    return { loaded: true, ...describeSeed(seed) };
+  }
+
+  function describeSeed(seed) {
+    return {
+      serverUrl: seed.server_url,
+      productUuid: seed.product_uuid,
+      generatedAt: seed.generated_at,
+      getKeyUrl: seed.get_key_url ?? null,
+      kinds: Object.keys(seed.keys ?? {}),
+      // The seed is for one server; pointed at another, its keys mean nothing.
+      matchesSettings: seed.server_url === settings().serverUrl && seed.product_uuid === settings().productUuid,
+    };
+  }
+
+  function seedSummary() {
+    const seed = state.get().seed;
+    return seed ? describeSeed(seed) : null;
+  }
+
+  // The helper publishes a fingerprint of the server's public key, from a
+  // separate host: a second way to notice the app is talking to a
+  // different server than the demo's.
+  async function seedKeyMatchesServer() {
+    const seed = state.get().seed;
+    if (!seed?.public_key_sha256) return null;
+    const publicKey = await client().getPublicKey();
+    return crypto.createHash('sha256').update(publicKey).digest('hex') === seed.public_key_sha256;
+  }
+
+  /**
+   * Checks a seeded key online (verifyKey) and, if the seed has one, its
+   * offline file (verifySignedFile). Never activates it.
+   */
+  async function tryDemoKey(kind) {
+    const seed = state.get().seed;
+    const entry = seed?.keys?.[kind];
+    if (!entry) throw Object.assign(new Error(`No "${kind}" key in seed.json`), { code: 'no_seed' });
+    let online;
+    try {
+      const license = await client().verifyKey(entry.key, seed.product_uuid);
+      online = { state: 'ok', license: describeLicense(license) };
+    } catch (err) {
+      online = classifyError(err) === 'refused'
+        ? { state: 'refused', status: err.status, message: err.message }
+        : { state: 'unreachable', message: err.message };
+    }
+    let offline = null;
+    if (entry.offline_file) {
+      const offlineClient = createClient({ publicKey: await publicKey() });
+      offline = { valid: await offlineClient.verifySignedFile(entry.offline_file, seed.product_uuid), file: describeFile(entry.offline_file) };
+    }
+    return { kind, keyHint: `…${entry.key.slice(-4)}`, online, offline };
+  }
+
   return {
+    loadSeed,
+    seedSummary,
+    seedKeyMatchesServer,
+    tryDemoKey,
     activate,
     reactivate,
     launchCheck,

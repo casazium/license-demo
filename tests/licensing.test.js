@@ -308,3 +308,100 @@ describe('a changed public key', () => {
     expect(await ctx.licensing.launchCheck()).toMatchObject({ state: 'ok', publicKeyChanged: false });
   });
 });
+
+describe("the demo server's seed.json", () => {
+  const SEED = {
+    generated_at: '2026-10-16T04:00:00.000Z',
+    server_url: 'https://l.example.test/v1',
+    product_uuid: PRODUCT,
+    public_key_sha256: 'will-be-set',
+    get_key_url: 'https://buy.stripe.com/test_x',
+    keys: {
+      revoked: { key: 'REVOKED-KEY-0001', offline_file: { license: { key: 'r', expires_at: '2099-01-01T00:00:00Z' }, signature: 's' } },
+      expired: { key: 'EXPIRED-KEY-0002', offline_file: { license: { key: 'e', expires_at: '2000-01-01T00:00:00Z' }, signature: 's' } },
+      business: { key: 'BUSINESS-KEY-0003' },
+    },
+  };
+
+  function withSeed(overrides = {}, seed = SEED, helperUrl = 'https://demo.example.test') {
+    const store = memory();
+    const client = fakeClient(overrides);
+    const fetched = [];
+    const licensing = createLicensing({
+      createClient: () => client,
+      ...store,
+      settings: () => ({ serverUrl: 'https://l.example.test/v1', productUuid: PRODUCT, helperUrl }),
+      instanceId: () => 'machine-1',
+      fetch: async (url) => {
+        fetched.push(url);
+        return new Response(JSON.stringify(seed), { status: 200 });
+      },
+    });
+    return { licensing, store, client, fetched };
+  }
+
+  test('loads seed.json from the helper and says whether it matches the settings', async () => {
+    const { licensing, fetched } = withSeed();
+    const result = await licensing.loadSeed();
+    expect(fetched).toEqual(['https://demo.example.test/seed.json']);
+    expect(result).toMatchObject({ loaded: true, matchesSettings: true, getKeyUrl: 'https://buy.stripe.com/test_x', kinds: ['revoked', 'expired', 'business'] });
+  });
+
+  test('a seed for another server is loaded but marked as not matching', async () => {
+    const { licensing } = withSeed({}, { ...SEED, server_url: 'https://other.example.test/v1' });
+    expect((await licensing.loadSeed()).matchesSettings).toBe(false);
+  });
+
+  test('no helper URL: nothing is fetched and any old seed is dropped', async () => {
+    const { licensing, store, fetched } = withSeed({}, SEED, '');
+    store.state.update({ seed: SEED });
+    expect(await licensing.loadSeed()).toEqual({ loaded: false, reason: 'no_helper' });
+    expect(fetched).toEqual([]);
+    expect(licensing.seedSummary()).toBeNull();
+  });
+
+  test('a malformed seed.json is refused', async () => {
+    const { licensing } = withSeed({}, { hello: 'world' });
+    await expect(licensing.loadSeed()).rejects.toThrow(/expected shape/);
+  });
+
+  test('revoked: refused online, its file still verifies offline; nothing is activated', async () => {
+    let activated = false;
+    const { licensing } = withSeed({
+      verifyKey: async () => Promise.reject(httpError(403, 'License is not active')),
+      verifySignedFile: async (file) => file.license.key === 'r',
+      activate: async () => {
+        activated = true;
+        return { token: 't' };
+      },
+    });
+    await licensing.loadSeed();
+    const result = await licensing.tryDemoKey('revoked');
+    expect(result).toMatchObject({ kind: 'revoked', keyHint: '…0001', online: { state: 'refused', status: 403 }, offline: { valid: true } });
+    expect(activated).toBe(false);
+  });
+
+  test('business: verified online, with its tier; it has no file', async () => {
+    const { licensing } = withSeed({ verifyKey: async () => ({ valid: true, tier: 'business', product_id: 'casazium-demo' }) });
+    await licensing.loadSeed();
+    const result = await licensing.tryDemoKey('business');
+    expect(result.online).toMatchObject({ state: 'ok', license: { tier: 'business' } });
+    expect(result.offline).toBeNull();
+  });
+
+  test('an unknown kind, or no seed, is an error', async () => {
+    const { licensing } = withSeed();
+    await expect(licensing.tryDemoKey('revoked')).rejects.toThrow(/No "revoked" key/);
+  });
+
+  test("the seed's key fingerprint is checked against the server's public key", async () => {
+    const crypto = await import('node:crypto');
+    const digest = crypto.createHash('sha256').update('PUBLIC KEY').digest('hex');
+    const good = withSeed({}, { ...SEED, public_key_sha256: digest });
+    await good.licensing.loadSeed();
+    expect(await good.licensing.seedKeyMatchesServer()).toBe(true);
+    const bad = withSeed({}, { ...SEED, public_key_sha256: 'f'.repeat(64) });
+    await bad.licensing.loadSeed();
+    expect(await bad.licensing.seedKeyMatchesServer()).toBe(false);
+  });
+});

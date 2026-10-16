@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { _electron as electron } from 'playwright-core';
 
-const { LICENSE_SERVER_URL = 'http://localhost:3001/v1', LICENSE_KEY, PRODUCT_UUID, SCREENSHOTS } = process.env;
+const { LICENSE_SERVER_URL = 'http://localhost:3001/v1', LICENSE_KEY, PRODUCT_UUID, SCREENSHOTS, HELPER_URL } = process.env;
 if (!LICENSE_KEY || !PRODUCT_UUID) throw new Error('Set LICENSE_KEY and PRODUCT_UUID (npm run seed:local prints both)');
 const shots = SCREENSHOTS ?? fs.mkdtempSync(path.join(os.tmpdir(), 'license-demo-shots-'));
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'license-demo-data-'));
@@ -22,12 +22,28 @@ const text = (id) => page.locator(`#${id}`).innerText();
 const shot = (name) => page.screenshot({ path: path.join(shots, `${name}.png`), fullPage: true });
 
 try {
-  await page.waitForLoadState('domcontentloaded');
+  await page.waitForSelector('body[data-ready="true"]');
   await page.fill('#server-url', LICENSE_SERVER_URL);
   await page.fill('#product-uuid', PRODUCT_UUID);
   await page.click('#settings-form button[type=submit]');
   await page.waitForFunction(() => document.querySelector('#settings-note').textContent === 'Saved.');
   await shot('1-start');
+
+  // Demo keys, when a demo helper is running (its seed.json must be for
+  // this server and product).
+  if (HELPER_URL) {
+    await page.fill('#helper-url', HELPER_URL);
+    await page.click('#settings-form button[type=submit]');
+    await page.waitForFunction(() => /Demo keys from/.test(document.querySelector('#demo-summary').textContent));
+    console.log('seed         :', await text('demo-summary'));
+    for (const kind of ['revoked', 'expired', 'business']) {
+      await page.evaluate(() => document.querySelector('#demo-state').replaceChildren());
+      await page.click(`#try-${kind}`);
+      await page.waitForFunction(() => document.querySelector('#demo-state').textContent.length > 0);
+      console.log(`${kind.padEnd(13)}:`, (await text('demo-state')).replace(/\n/g, ' | '));
+    }
+    await shot('1b-demo-keys');
+  }
 
   await page.fill('#key-input', LICENSE_KEY);
   await page.click('#activate-form button[type=submit]');
@@ -108,6 +124,7 @@ try {
 } catch (err) {
   console.log('FAILED       :', err.message.split('\n')[0]);
   console.log('license state:', await text('license-state').catch(() => '?'));
+  for (const id of ['settings-note', 'demo-summary', 'demo-state']) console.log(`${id.padEnd(13)}:`, await text(id).catch(() => '?'));
   console.log('page errors  :', errors);
   await shot('failure').catch(() => {});
   process.exitCode = 1;

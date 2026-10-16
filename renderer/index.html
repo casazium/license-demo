@@ -45,6 +45,22 @@
           </div>
         </section>
 
+        <section id="demo" class="panel">
+          <h2>Demo keys</h2>
+          <p class="hint">States you can't reach with your own key: revoked, expired, a higher tier. Shared by everyone trying the demo, so they're only checked - never activated.</p>
+          <p id="demo-summary" class="summary"></p>
+          <div id="demo-state" class="state"></div>
+          <div class="row">
+            <button id="get-key" hidden>Get a demo key</button>
+            <button id="apply-seed" class="secondary" hidden>Use the demo server's settings</button>
+          </div>
+          <div class="row">
+            <button id="try-revoked" class="secondary" disabled>Try the revoked key</button>
+            <button id="try-expired" class="secondary" disabled>Try the expired key</button>
+            <button id="try-business" class="secondary" disabled>Try the Business key</button>
+          </div>
+        </section>
+
         <section id="machines" class="panel">
           <h2>Machines</h2>
           <p class="hint">The demo license allows two machines. These buttons act as other computers would, so one machine can show the limit and a seat freed from somewhere else.</p>
@@ -84,6 +100,7 @@
           <form id="settings-form">
             <label>Server URL <input id="server-url" type="url" spellcheck="false" /></label>
             <label>Product UUID <input id="product-uuid" type="text" spellcheck="false" /></label>
+            <label>Demo helper URL (the demo server only) <input id="helper-url" type="url" spellcheck="false" placeholder="https://demo.casazium.com" /></label>
             <div class="row"><button type="submit">Save</button><span id="settings-note" class="note"></span></div>
           </form>
           <p id="storage-note" class="note"></p>
