@@ -4,6 +4,7 @@
 // call for the developer panel. The SDK itself is unchanged.
 
 const SECRET_FIELDS = new Set(['key', 'token', 'instance_id', 'signature', 'portal_token']);
+const MAX_LOGGED_BODY = 64 * 1024;
 
 // Keys, activation tokens and portal links stay out of the call log:
 // only their last four characters are shown.
@@ -55,7 +56,9 @@ export function createRecordingFetch({ baseFetch, timeoutMs = 5000, onCall, secr
       // Read the body once here, for the log, and hand the SDK a response
       // it can still read.
       const text = await res.text();
-      onCall({ ...call, status: res.status, response: maskBody(parseJson(text)), ms: now() - started });
+      // The log keeps a bounded copy; the SDK still gets the whole response.
+      const logged = text.length > MAX_LOGGED_BODY ? `(${text.length} characters, not shown)` : maskBody(parseJson(text));
+      onCall({ ...call, status: res.status, response: logged, ms: now() - started });
       return new Response(text, { status: res.status, headers: res.headers });
     } catch (err) {
       onCall({ ...call, error: err.name === 'TimeoutError' ? `no answer in ${timeoutMs} ms` : err.message, ms: now() - started });
@@ -73,5 +76,8 @@ export function createRecordingFetch({ baseFetch, timeoutMs = 5000, onCall, secr
 export function classifyError(err) {
   const status = err?.status;
   if (typeof status === 'number' && status >= 400 && status < 500 && status !== 429) return 'refused';
+  // The SDK's own checks on a response the server sent successfully: the
+  // license is for another product. A real answer, not a network problem.
+  if (status === undefined && /product_uuid mismatch/.test(err?.message ?? '')) return 'refused';
   return 'unreachable';
 }

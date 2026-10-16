@@ -1,28 +1,41 @@
-// Where the app keeps things. The license key and activation token go in
-// safeStorage (the OS keychain on macOS and Windows); everything else -
-// settings, the offline license file, timestamps - in plain JSON in the
-// app's user-data folder.
+// Where the app keeps things.
+//
+// The vault holds everything the license decision depends on - the key,
+// the activation token, the offline license file (which contains the key),
+// the pinned public key, and when the app last checked online - encrypted
+// with safeStorage (the OS keychain on macOS and Windows). Editing a file
+// on disk can't forge a pass, and the key isn't readable on disk.
+//
+// Plain JSON in the app's user-data folder holds only the settings and the
+// demo server's seed.json, which is public.
 import fs from 'node:fs';
 import path from 'node:path';
 import { app, safeStorage } from 'electron';
 
+const file = (name) => path.join(app.getPath('userData'), name);
+
+// Write to a temporary file, then rename over the old one: a crash halfway
+// through leaves the old file, never a torn one.
+function writeAtomic(target, data) {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, data);
+  fs.renameSync(temp, target);
+}
+
 function jsonFile(name, defaults) {
-  const file = () => path.join(app.getPath('userData'), name);
   const read = () => {
     try {
-      return { ...defaults, ...JSON.parse(fs.readFileSync(file(), 'utf8')) };
+      return { ...defaults, ...JSON.parse(fs.readFileSync(file(name), 'utf8')) };
     } catch {
       return { ...defaults };
     }
   };
-  const write = (value) => {
-    fs.mkdirSync(path.dirname(file()), { recursive: true });
-    fs.writeFileSync(file(), JSON.stringify(value, null, 2));
-  };
+  const write = (value) => writeAtomic(file(name), JSON.stringify(value, null, 2));
   return { get: read, update: (patch) => write({ ...read(), ...patch }), replace: write };
 }
 
-export const state = jsonFile('state.json', { offlineFile: null, publicKey: null, lastSeenAt: null, lastCheckedAt: null });
+export const state = jsonFile('state.json', { seed: null });
 
 export const DEFAULT_SETTINGS = {
   // The demo server once it exists; a local server until then.
@@ -43,22 +56,32 @@ export function secretStorageProtected() {
   return safeStorage.getSelectedStorageBackend() !== 'basic_text';
 }
 
-const secretFile = () => path.join(app.getPath('userData'), 'license.bin');
+const vaultFile = () => file('license.bin');
 
-export const secrets = {
+export const vault = {
+  // null when nothing is stored. A vault that exists but can't be read
+  // (the keychain refused, or the file is damaged) throws rather than
+  // looking like "no license".
   get() {
+    let encrypted;
     try {
-      const encrypted = fs.readFileSync(secretFile());
+      encrypted = fs.readFileSync(vaultFile());
+    } catch (err) {
+      if (err.code === 'ENOENT') return null;
+      throw err;
+    }
+    try {
       return JSON.parse(safeStorage.decryptString(encrypted));
     } catch {
-      return null;
+      throw Object.assign(new Error("The stored license can't be read (the system keychain refused, or the file is damaged)"), {
+        code: 'vault_unreadable',
+      });
     }
   },
   set(value) {
-    fs.mkdirSync(path.dirname(secretFile()), { recursive: true });
-    fs.writeFileSync(secretFile(), safeStorage.encryptString(JSON.stringify(value)));
+    writeAtomic(vaultFile(), safeStorage.encryptString(JSON.stringify(value)));
   },
   clear() {
-    fs.rmSync(secretFile(), { force: true });
+    fs.rmSync(vaultFile(), { force: true });
   },
 };

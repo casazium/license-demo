@@ -5,6 +5,33 @@
 
 const $ = (id) => document.getElementById(id);
 
+// While any call to the main process is in flight the page is marked busy
+// and buttons ignore clicks, so a second press can't start a conflicting
+// action. (The main process also runs licensing actions one at a time.)
+let inFlight = 0;
+function busy(api) {
+  return Object.fromEntries(
+    Object.entries(api).map(([name, fn]) => [
+      name,
+      name === 'onCall'
+        ? fn
+        : async (...args) => {
+            inFlight += 1;
+            document.body.classList.add('busy');
+            try {
+              return await fn(...args);
+            } finally {
+              inFlight -= 1;
+              if (inFlight === 0) document.body.classList.remove('busy');
+            }
+          },
+    ])
+  );
+}
+const licensing = busy(window.licensing);
+const demo = busy(window.demo);
+const appApi = busy(window.app);
+
 function show(el, kind, lines) {
   el.className = `state ${kind}`;
   el.replaceChildren(...lines.filter(Boolean).map((line) => Object.assign(document.createElement('div'), { textContent: line })));
@@ -24,9 +51,12 @@ const LAUNCH_TEXT = {
 };
 
 async function refreshStatus() {
-  const res = await window.licensing.status();
+  const res = await licensing.status();
   if (!res.ok) return show($('license-state'), 'bad', [res.error]);
   const s = res.value;
+  if (s.storageError) show($('license-state'), 'bad', [s.storageError]);
+  // A key stored here but no activation (its seat was freed elsewhere).
+  $('reactivate').hidden = !(s.hasKey && !s.activated);
   $('storage-note').textContent = s.secretsProtected
     ? 'The key and token are stored in the system keychain.'
     : 'No system keychain here: the key and token are stored, but not protected.';
@@ -48,27 +78,40 @@ async function refreshStatus() {
   }
 }
 
+// Why the offline check said no, in words.
+const OFFLINE_REASONS = {
+  no_file: 'There is no license file on this machine.',
+  clock_went_back: "This machine's clock has gone back since the app last ran. Connect to the internet to check the license.",
+  not_this_key: "The license file is for a different key than the one stored here.",
+  no_public_key: "The server's public key isn't known yet, so the file can't be checked.",
+  file_refused: "The license file doesn't verify: its signature, product or expiry is wrong.",
+  offline_too_long: 'The app has been offline too long. Connect to the internet to check the license.',
+};
+
 async function launchCheck() {
-  const res = await window.licensing.launchCheck({ offline: $('offline-switch').checked });
+  const res = await licensing.launchCheck({ offline: $('offline-switch').checked });
   if (!res.ok) return show($('license-state'), 'bad', [res.error]);
   const r = res.value;
+  $('key-warning').hidden = !r.publicKeyChanged;
   if (r.state === 'offline') {
     const why = r.forced ? 'Acting as if offline' : `Couldn't reach the server (${r.message})`;
-    return show($('license-state'), r.valid ? 'good' : 'bad', [
+    show($('license-state'), r.valid ? 'good' : 'bad', [
       `${why}: the license file decides.`,
-      r.valid ? 'The file verifies: the app keeps working.' : `The file doesn't verify${r.reason ? ` (${r.reason})` : ''}.`,
-      r.clockWentBack ? "This machine's clock has gone backwards since the last check." : null,
+      r.valid
+        ? `The file verifies: the app keeps working, for ${r.daysLeft} more day${r.daysLeft === 1 ? '' : 's'} without a check.`
+        : OFFLINE_REASONS[r.reason] ?? `The file doesn't verify (${r.reason}).`,
     ]);
+  } else if (r.state === 'refused' && r.status === 404 && (await demo.seed()).value?.matchesSettings) {
+    show($('license-state'), 'warn', ['This demo key was reset: demo keys last a day. Get a new one.']);
+  } else {
+    const [kind, text] = LAUNCH_TEXT[r.state] ?? ['bad', r.state];
+    show($('license-state'), kind, [text, describeLicense(r.license), r.message]);
   }
-  const [kind, text] = LAUNCH_TEXT[r.state] ?? ['bad', r.state];
-  show($('license-state'), kind, [text, describeLicense(r.license), r.message]);
-  $('reactivate').hidden = r.state !== 'seat_freed';
-  $('key-warning').hidden = !r.publicKeyChanged;
   await refreshStatus();
 }
 
 $('reactivate').addEventListener('click', async () => {
-  const res = await window.licensing.reactivate();
+  const res = await licensing.reactivate();
   if (!res.ok) return show($('license-state'), 'bad', [res.error]);
   if (res.value.outcome !== 'activated') {
     return show($('license-state'), 'warn', ['This machine is activated, but its token is gone. Free the seat from the license portal, then try again.']);
@@ -79,7 +122,7 @@ $('reactivate').addEventListener('click', async () => {
 });
 
 $('trust-key').addEventListener('click', async () => {
-  const res = await window.licensing.trustNewPublicKey();
+  const res = await licensing.trustNewPublicKey();
   if (!res.ok) return show($('license-state'), 'bad', [res.error]);
   $('key-warning').hidden = true;
   show($('offline-state'), 'good', ['Pinned the new key, and exported a fresh license file signed with it.']);
@@ -87,7 +130,7 @@ $('trust-key').addEventListener('click', async () => {
 });
 
 $('simulate-machine').addEventListener('click', async () => {
-  const res = await window.licensing.simulateAnotherMachine();
+  const res = await licensing.simulateAnotherMachine();
   if (!res.ok) return show($('machines-state'), res.code === 'no_key' ? 'muted' : 'bad', [res.code === 'no_key' ? 'Activate a license first.' : res.error]);
   const r = res.value;
   if (r.outcome === 'activated') show($('machines-state'), 'good', [`Machine ${r.machine} activated: it took a seat.`]);
@@ -97,14 +140,14 @@ $('simulate-machine').addEventListener('click', async () => {
 });
 
 $('free-simulated').addEventListener('click', async () => {
-  const res = await window.licensing.freeSimulatedMachines();
+  const res = await licensing.freeSimulatedMachines();
   if (!res.ok) return show($('machines-state'), 'bad', [res.error]);
   show($('machines-state'), 'muted', [`Freed ${res.value.count} simulated machine${res.value.count === 1 ? '' : 's'}.`]);
   await refreshStatus();
 });
 
 $('free-this-seat').addEventListener('click', async () => {
-  const res = await window.licensing.freeThisSeatElsewhere();
+  const res = await licensing.freeThisSeatElsewhere();
   if (!res.ok) return show($('machines-state'), 'bad', [res.error]);
   if (res.value.outcome === 'not_activated') return show($('machines-state'), 'muted', ['This machine is not activated.']);
   show($('machines-state'), 'warn', [
@@ -119,7 +162,10 @@ $('activate-form').addEventListener('submit', async (event) => {
   const key = $('key-input').value.trim();
   if (!key) return;
   show($('license-state'), 'muted', ['Activating…']);
-  const res = await window.licensing.activate(key);
+  const res = await licensing.activate(key);
+  if (res.ok && res.value.outcome === 'refused') {
+    return show($('license-state'), 'bad', ['The server refused this key, so no machine was used.', res.value.message]);
+  }
   if (!res.ok && res.status === 429) {
     // The server limits activations and deactivations per key (20 per 15
     // minutes), so a script hammering one key can't fill its seats.
@@ -141,14 +187,14 @@ $('activate-form').addEventListener('submit', async (event) => {
 $('launch-check').addEventListener('click', launchCheck);
 
 $('deactivate').addEventListener('click', async () => {
-  const res = await window.licensing.deactivate();
+  const res = await licensing.deactivate();
   if (!res.ok) return show($('license-state'), 'bad', [res.error]);
   show($('license-state'), 'muted', ["Deactivated: this machine's seat is free, and the key can be activated elsewhere."]);
   await refreshStatus();
 });
 
 $('verify-offline').addEventListener('click', async () => {
-  const res = await window.licensing.verifyOffline();
+  const res = await licensing.verifyOffline();
   if (!res.ok) return show($('offline-state'), 'bad', [res.error]);
   const r = res.value;
   show($('offline-state'), r.valid ? 'good' : 'bad', [
@@ -159,21 +205,26 @@ $('verify-offline').addEventListener('click', async () => {
 });
 
 $('export-offline').addEventListener('click', async () => {
-  const res = await window.licensing.exportOffline();
+  const res = await licensing.exportOffline();
   if (!res.ok) return show($('offline-state'), 'bad', [res.error]);
   await refreshStatus();
 });
 
 async function refreshUsage() {
-  const res = await window.licensing.usage();
+  const res = await licensing.usage();
   if (!res.ok) return show($('usage-state'), res.code === 'no_key' ? 'muted' : 'bad', [res.code === 'no_key' ? 'Activate a license first.' : res.error]);
   const metric = (res.value.metrics ?? []).find((m) => m.metric === 'api_calls_per_day');
   if (!metric) return show($('usage-state'), 'muted', ['This license has no usage limit.']);
-  show($('usage-state'), metric.exceeded ? 'bad' : 'muted', [`${metric.used} of ${metric.limit} used with this key.`]);
+  // The server refuses the next use once remaining is 0 (exceeded only
+  // becomes true past the limit).
+  show($('usage-state'), metric.remaining === 0 ? 'bad' : 'muted', [
+    `${metric.used} of ${metric.limit} used with this key.`,
+    metric.remaining === 0 ? 'The limit is reached: the next use is refused.' : null,
+  ]);
 }
 
 $('use-once').addEventListener('click', async () => {
-  const res = await window.licensing.trackUsage();
+  const res = await licensing.trackUsage();
   if (!res.ok) {
     await refreshUsage();
     return show($('usage-state'), 'bad', [res.error]);
@@ -183,7 +234,7 @@ $('use-once').addEventListener('click', async () => {
 $('refresh-usage').addEventListener('click', refreshUsage);
 
 async function loadSettings() {
-  const res = await window.app.getSettings();
+  const res = await appApi.getSettings();
   if (!res.ok) return;
   $('server-url').value = res.value.serverUrl;
   $('product-uuid').value = res.value.productUuid;
@@ -192,7 +243,7 @@ async function loadSettings() {
 
 $('settings-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const res = await window.app.saveSettings({
+  const res = await appApi.saveSettings({
     serverUrl: $('server-url').value,
     productUuid: $('product-uuid').value,
     helperUrl: $('helper-url').value,
@@ -207,7 +258,7 @@ $('settings-form').addEventListener('submit', async (event) => {
 const DEMO_KINDS = ['revoked', 'expired', 'business'];
 
 async function refreshSeed({ reload = false } = {}) {
-  const res = reload ? await window.demo.loadSeed() : await window.demo.seed();
+  const res = reload ? await demo.loadSeed() : await demo.seed();
   const seed = res.ok ? (reload ? (res.value.loaded ? res.value : null) : res.value) : null;
   const ready = Boolean(seed?.matchesSettings);
   for (const kind of DEMO_KINDS) $(`try-${kind}`).disabled = !ready || !seed.kinds.includes(kind);
@@ -222,7 +273,7 @@ async function refreshSeed({ reload = false } = {}) {
     ? `Demo keys from ${new Date(seed.generatedAt).toLocaleString()}.`
     : `The demo helper's keys are for ${seed.serverUrl}, not the server set here.`;
   if (ready) {
-    const match = await window.demo.keyMatchesServer();
+    const match = await demo.keyMatchesServer();
     if (match.ok && match.value === false) {
       show($('demo-state'), 'warn', [
         "The server's public key doesn't match the one the demo helper publishes.",
@@ -248,14 +299,15 @@ function describeTry(r) {
 }
 
 const TRY_NOTES = {
-  revoked: "Revoked keys are refused online at once, but a file exported before the revocation keeps verifying offline until it expires. If that matters, issue short-lived files and have the app check online now and then.",
+  revoked:
+    "A revoked key is refused online at once, but a file exported before the revocation still verifies on its own. That's why this app drops its file when the server says no, refreshes it on every good check, and stops working offline after a set number of days without one.",
   expired: 'Expiry is checked on both sides: by the server, and by the file against this machine\'s clock.',
   business: 'A higher tier, read from verifyKey: this is where an app would unlock its Business features.',
 };
 
 for (const kind of DEMO_KINDS) {
   $(`try-${kind}`).addEventListener('click', async () => {
-    const res = await window.demo.tryKey(kind);
+    const res = await demo.tryKey(kind);
     if (!res.ok) return show($('demo-state'), 'bad', [res.error]);
     const [state, lines] = describeTry(res.value);
     show($('demo-state'), state, [...lines, TRY_NOTES[kind]]);
@@ -263,7 +315,7 @@ for (const kind of DEMO_KINDS) {
 }
 
 $('apply-seed').addEventListener('click', async () => {
-  const res = await window.demo.applySeed();
+  const res = await demo.applySeed();
   if (!res.ok) return show($('demo-state'), 'bad', [res.error]);
   await loadSettings();
   await refreshStatus();
@@ -272,7 +324,7 @@ $('apply-seed').addEventListener('click', async () => {
 });
 
 $('get-key').addEventListener('click', async () => {
-  const res = await window.demo.getKey();
+  const res = await demo.getKey();
   if (!res.ok) return show($('demo-state'), 'bad', [res.error]);
   show($('demo-state'), 'muted', [
     'The test checkout opened in your browser. Pay with the test card 4242 4242 4242 4242 (any future date, any CVC).',
@@ -300,20 +352,20 @@ function addCall(call) {
 }
 
 $('clear-calls').addEventListener('click', async () => {
-  await window.app.clearCalls();
+  await appApi.clearCalls();
   $('call-list').replaceChildren();
 });
 
-window.app.onCall(addCall);
+appApi.onCall(addCall);
 
 (async () => {
   await loadSettings();
   await refreshSeed({ reload: true });
-  const existing = await window.app.calls();
+  const existing = await appApi.calls();
   if (existing.ok) existing.value.forEach(addCall);
   await refreshStatus();
   // The launch check: once, at start.
-  if ((await window.licensing.status()).value?.hasKey) {
+  if ((await licensing.status()).value?.hasKey) {
     await launchCheck();
     await refreshUsage();
   }

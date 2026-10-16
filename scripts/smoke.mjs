@@ -56,6 +56,14 @@ try {
   await page.waitForFunction(() => document.querySelector('#license-state').textContent.length > 0);
   console.log('launch check :', (await text('license-state')).replace(/\n/g, ' | '));
 
+  // The stored key and token belong to this server: switching while
+  // they're stored is refused.
+  await page.fill('#server-url', 'https://elsewhere.example.test/v1');
+  await page.click('#settings-form button[type=submit]');
+  await page.waitForFunction(() => /Deactivate this machine before/.test(document.querySelector('#settings-note').textContent));
+  console.log('switch server:', await text('settings-note'));
+  await page.fill('#server-url', LICENSE_SERVER_URL);
+
   await page.waitForFunction(() => /used with this key/.test(document.querySelector('#usage-state').textContent));
   const before = await text('usage-state');
   await page.click('#use-once');
@@ -97,22 +105,15 @@ try {
   console.log('launch check :', (await text('license-state')).replace(/\n/g, ' | '));
   console.log('reactivate shown:', await page.isVisible('#reactivate'));
   await shot('4-seat-freed');
+  // The seat was freed, so going offline mustn't keep the app working.
+  await page.check('#offline-switch');
+  await page.click('#launch-check');
+  await page.waitForFunction(() => /license file decides/.test(document.querySelector('#license-state').textContent));
+  console.log('offline after:', (await text('license-state')).replace(/\n/g, ' | '));
+  await page.uncheck('#offline-switch');
   await page.click('#reactivate');
   await page.waitForFunction(() => /Activated again/.test(document.querySelector('#license-state').textContent));
   console.log('reactivate   :', (await text('license-state')).replace(/\n/g, ' | '));
-
-  // A changed public key: replace the pinned key, as a rebuilt server would look.
-  const stateFile = path.join(userData, 'state.json');
-  const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-  fs.writeFileSync(stateFile, JSON.stringify({ ...saved, publicKey: '-----BEGIN PUBLIC KEY-----\nnot the server key\n-----END PUBLIC KEY-----' }));
-  await page.click('#launch-check');
-  await page.waitForSelector('#key-warning:not([hidden])');
-  console.log('key warning shown:', await page.isVisible('#key-warning'));
-  await shot('5-key-warning');
-  await page.click('#trust-key');
-  await page.waitForSelector('#key-warning[hidden]', { state: 'attached' });
-  console.log('after trust  :', await text('offline-state'));
-  console.log('pinned again :', JSON.parse(fs.readFileSync(stateFile, 'utf8')).publicKey === saved.publicKey);
 
   await page.click('#deactivate');
   await page.waitForFunction(() => /Deactivated/.test(document.querySelector('#license-state').textContent));

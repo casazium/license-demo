@@ -3,12 +3,12 @@
 // and is treated as untrusted (anyone can open its dev tools).
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, net, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, net, session, shell } from 'electron';
 import { CasaziumLicenseClient } from '@casazium/license-sdk';
 import { createLicensing } from './licensing.js';
 import { createRecordingFetch } from './calls.js';
 import { appInstanceId } from './machine-id.js';
-import { DEFAULT_SETTINGS, secretStorageProtected, secrets, settings, state } from './store.js';
+import { DEFAULT_SETTINGS, secretStorageProtected, settings, state, vault } from './store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,13 +30,23 @@ const recordingFetch = createRecordingFetch({
     if (calls.length > 200) calls.shift();
     window?.webContents.send('calls:new', call);
   },
-  secrets: () => [secrets.get()?.key].filter(Boolean),
+  secrets: () => {
+    try {
+      return [vault.get()?.key].filter(Boolean);
+    } catch {
+      return [];
+    }
+  },
 });
 
 const licensing = createLicensing({
   createClient: (options) => new CasaziumLicenseClient({ fetch: recordingFetch, ...options }),
-  secrets,
+  vault,
   state,
+  // A real app passes its server's public key here (builtInPublicKey), so
+  // the offline check trusts nothing it downloads. This demo can point at
+  // any server, so it fetches the key once and pins it instead.
+  builtInPublicKey: null,
   settings: () => settings.get(),
   instanceId: () => appInstanceId(settings.get().productUuid),
   fetch: recordingFetch,
@@ -53,28 +63,38 @@ function validServerUrl(value) {
   }
 }
 
+// Opens a link in the system browser, only for https URLs on the
+// allowlist. Anything else - including a URL the page made up - is refused.
 function openExternal(value) {
-  const url = new URL(value);
-  if (url.protocol !== 'https:') return false;
-  const host = url.hostname;
-  const portal = (() => {
-    try {
-      return host === new URL(settings.get().serverUrl).hostname;
-    } catch {
-      return false;
-    }
-  })();
-  if (!EXTERNAL_HOSTS.has(host) && !portal) return false;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' || !EXTERNAL_HOSTS.has(url.hostname)) return false;
   shell.openExternal(url.href);
   return true;
 }
 
+// Licensing actions run one at a time: two button presses at once mustn't
+// read and write the stored license in between each other's awaits.
+let queue = Promise.resolve();
+const serialized = (fn) => (...args) => {
+  const run = queue.then(() => fn(...args));
+  queue = run.catch(() => {});
+  return run;
+};
+
 // Every IPC handler checks the message came from the app's own page.
 function handle(channel, fn) {
+  const run = channel.startsWith('licensing:') || channel.startsWith('seed:') || channel.startsWith('demo:') || channel === 'settings:set'
+    ? serialized(fn)
+    : fn;
   ipcMain.handle(channel, async (event, ...args) => {
     if (event.senderFrame?.url !== INDEX_URL) throw new Error('Refused: unexpected sender');
     try {
-      return { ok: true, value: await fn(...args) };
+      return { ok: true, value: await run(...args) };
     } catch (err) {
       return { ok: false, error: err.message, status: err.status ?? null, code: err.code ?? null };
     }
@@ -98,14 +118,24 @@ handle('seed:load', () => licensing.loadSeed());
 handle('seed:summary', () => licensing.seedSummary());
 handle('seed:keyMatchesServer', () => licensing.seedKeyMatchesServer());
 handle('demo:try', (kind) => licensing.tryDemoKey(String(kind)));
+// The stored key and token belong to the server they were activated on:
+// switching server or product while they're stored would send them to the
+// new one. Deactivate first.
+function refuseWhileLicensed(next) {
+  const current = settings.get();
+  if (next.serverUrl === current.serverUrl && next.productUuid === current.productUuid) return;
+  if (licensing.status().hasKey) {
+    throw new Error('Deactivate this machine before changing the server or product: the stored license belongs to this one');
+  }
+}
+
 // Points the app at the server the seed describes.
 handle('seed:apply', () => {
   const seed = licensing.seedSummary();
   if (!seed) throw new Error('No seed.json loaded');
   if (!validServerUrl(seed.serverUrl)) throw new Error("seed.json's server URL isn't https");
-  const previous = settings.get();
-  settings.replace({ ...previous, serverUrl: seed.serverUrl, productUuid: seed.productUuid });
-  if (previous.serverUrl !== seed.serverUrl) state.update({ publicKey: null, offlineFile: null });
+  refuseWhileLicensed({ serverUrl: seed.serverUrl, productUuid: seed.productUuid });
+  settings.replace({ ...settings.get(), serverUrl: seed.serverUrl, productUuid: seed.productUuid });
   return settings.get();
 });
 handle('demo:getKey', () => {
@@ -121,10 +151,8 @@ handle('settings:set', (next) => {
   const helperUrl = String(next?.helperUrl ?? '').trim();
   if (!validServerUrl(serverUrl)) throw new Error('The server URL must be https (http only for localhost)');
   if (helperUrl && !validServerUrl(helperUrl)) throw new Error('The demo helper URL must be https (http only for localhost)');
-  const previous = settings.get();
+  refuseWhileLicensed({ serverUrl, productUuid });
   settings.replace({ ...DEFAULT_SETTINGS, serverUrl, productUuid, helperUrl });
-  // A different server has a different public key and different licenses.
-  if (previous.serverUrl !== serverUrl) state.update({ publicKey: null, offlineFile: null });
   return settings.get();
 });
 handle('calls:list', () => calls);
@@ -162,5 +190,11 @@ app.on('web-contents-created', (_event, contents) => {
   });
 });
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  // The app needs no camera, microphone, notifications or anything else a
+  // page can ask for.
+  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
+  createWindow();
+});
 app.on('window-all-closed', () => app.quit());

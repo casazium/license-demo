@@ -161,6 +161,11 @@ button {
   cursor: pointer;
 }
 
+body.busy button {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
 button:disabled {
   opacity: 0.45;
   cursor: default;

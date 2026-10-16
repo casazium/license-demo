@@ -25,9 +25,26 @@ keys you can't make yourself - revoked, expired, a higher tier - online
 and against their offline files, without activating them; and **Get a
 demo key** gets you a key of your own from a test purchase.
 
-If the server's signing key ever changes, the app says so: offline
-license files signed with the old key stop verifying, and an
-unexpected change can mean a different server.
+### Offline, and what it doesn't let through
+
+Without the server, the app trusts its signed license file, but only:
+
+- for at most `MAX_DAYS_OFFLINE` (14) days since the last good online
+  check - the file's own expiry is the license's, and a perpetual
+  license's file never expires, so it can't be the limit;
+- for the key stored on this machine;
+- while the clock hasn't gone back since the app last ran.
+
+When the server says no - revoked, expired, or this machine's seat freed
+elsewhere - the app drops the file, so going offline can't undo it. And
+every good online check refreshes the file.
+
+### The public key
+
+A real app ships its server's public key and passes it as
+`builtInPublicKey` (`main/main.js`), so the offline check trusts nothing it
+downloads. This demo can point at any server, so it fetches the key once
+and pins it instead, and warns if the server's key later changes.
 
 ## Run it
 
@@ -68,6 +85,22 @@ then paste the license key and activate.
 
 The app never holds an admin API key: issuing and revoking licenses
 belong on a server you control.
+
+Everything the license decision depends on - the key, the activation
+token, the offline file, the pinned public key and when the app last
+checked online - is stored encrypted with Electron's `safeStorage` (the
+system keychain). On Linux without a keychain the app says it can't
+protect them. Plain JSON holds only settings and the demo server's
+public `seed.json`.
+
+Sections marked **DEMO ONLY** in `main/licensing.js` (simulated machines,
+the demo keys, accepting a changed server key) exist so one computer can
+show what several would. Leave them out of a real app.
+
+For a packaged, distributed app, also set Electron's
+[fuses](https://www.electronjs.org/docs/latest/tutorial/fuses) (for
+example `RunAsNode` off) when you build it; they apply to the packaged
+binary, not to `npm start`.
 
 ## Tests
 
