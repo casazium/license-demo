@@ -19,7 +19,7 @@ const errors = [];
 page.on('pageerror', (err) => errors.push(err.message));
 page.on('console', (msg) => msg.type() === 'error' && errors.push(msg.text()));
 const text = (id) => page.locator(`#${id}`).innerText();
-const shot = (name) => page.screenshot({ path: path.join(shots, `${name}.png`) });
+const shot = (name) => page.screenshot({ path: path.join(shots, `${name}.png`), fullPage: true });
 
 try {
   await page.waitForLoadState('domcontentloaded');
@@ -58,6 +58,45 @@ try {
 
   // The renderer has no Node and no Electron.
   console.log('renderer has require/process:', await page.evaluate(() => [typeof require, typeof process]));
+
+  // Machines: a second machine takes the other seat, a third is refused.
+  const machines = async (button) => {
+    await page.evaluate(() => document.querySelector('#machines-state').replaceChildren());
+    await page.click(button);
+    await page.waitForFunction(() => document.querySelector('#machines-state').textContent.length > 0);
+    return (await text('machines-state')).replace(/\n/g, ' | ');
+  };
+  await page.uncheck('#offline-switch');
+  console.log('machine 2    :', await machines('#simulate-machine'));
+  console.log('machine 3    :', await machines('#simulate-machine'));
+  console.log('seats        :', await text('machines-summary'));
+  await shot('3-seat-limit');
+  console.log('free others  :', await machines('#free-simulated'));
+
+  // This machine's seat freed elsewhere: the launch check catches it.
+  console.log('free mine    :', await machines('#free-this-seat'));
+  await page.evaluate(() => document.querySelector('#license-state').replaceChildren());
+  await page.click('#launch-check');
+  await page.waitForFunction(() => document.querySelector('#license-state').textContent.length > 0);
+  console.log('launch check :', (await text('license-state')).replace(/\n/g, ' | '));
+  console.log('reactivate shown:', await page.isVisible('#reactivate'));
+  await shot('4-seat-freed');
+  await page.click('#reactivate');
+  await page.waitForFunction(() => /Activated again/.test(document.querySelector('#license-state').textContent));
+  console.log('reactivate   :', (await text('license-state')).replace(/\n/g, ' | '));
+
+  // A changed public key: replace the pinned key, as a rebuilt server would look.
+  const stateFile = path.join(userData, 'state.json');
+  const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  fs.writeFileSync(stateFile, JSON.stringify({ ...saved, publicKey: '-----BEGIN PUBLIC KEY-----\nnot the server key\n-----END PUBLIC KEY-----' }));
+  await page.click('#launch-check');
+  await page.waitForSelector('#key-warning:not([hidden])');
+  console.log('key warning shown:', await page.isVisible('#key-warning'));
+  await shot('5-key-warning');
+  await page.click('#trust-key');
+  await page.waitForSelector('#key-warning[hidden]', { state: 'attached' });
+  console.log('after trust  :', await text('offline-state'));
+  console.log('pinned again :', JSON.parse(fs.readFileSync(stateFile, 'utf8')).publicKey === saved.publicKey);
 
   await page.click('#deactivate');
   await page.waitForFunction(() => /Deactivated/.test(document.querySelector('#license-state').textContent));

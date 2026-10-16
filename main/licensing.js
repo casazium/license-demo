@@ -48,6 +48,15 @@ export function createLicensing({ createClient, secrets, state, settings, instan
     return (await client().getPublicKey()) === pinned;
   }
 
+  // After the server's key really did change (a rebuilt server, a
+  // rotated key): pin the new one, and replace the offline file, which
+  // was signed with the old key and won't verify any more.
+  async function trustNewPublicKey() {
+    state.update({ publicKey: await client().getPublicKey() });
+    const file = await exportOffline();
+    return { outcome: 'repinned', offlineFile: file };
+  }
+
   async function exportOffline() {
     const { key } = requireKey();
     const file = await client().exportOfflineLicense(key);
@@ -82,11 +91,20 @@ export function createLicensing({ createClient, secrets, state, settings, instan
       // machine activated again.
       return { outcome: 'already_activated_without_token' };
     }
-    secrets.set({ key: trimmed, token: result.token });
+    // Re-activating the same key keeps the demo's simulated machines.
+    const previous = secrets.get();
+    secrets.set({ key: trimmed, token: result.token, simulated: previous?.key === trimmed ? previous.simulated ?? [] : [] });
     const license = await client().verifyKey(trimmed, productUuid());
     // Saved straight away, so the app keeps working if the network goes.
     const file = await exportOffline();
     return { outcome: 'activated', license: describeLicense(license), offlineFile: file };
+  }
+
+  // Activates this machine again with the stored key - after its seat
+  // was freed elsewhere. The page never sees the full key, so it asks for
+  // this rather than calling activate(key).
+  async function reactivate() {
+    return activate(requireKey().key);
   }
 
   /**
@@ -106,8 +124,11 @@ export function createLicensing({ createClient, secrets, state, settings, instan
       const license = await client().verifyKey(key, productUuid());
       const { valid } = await client().validate(key, instanceId());
       state.update({ lastCheckedAt: now() });
-      if (!valid) return { state: 'seat_freed', license: describeLicense(license) };
-      return { state: 'ok', license: describeLicense(license) };
+      // The server answered, so this is the time to notice a changed
+      // signing key, before an offline check relies on the old one.
+      const publicKeyChanged = !(await checkPublicKeyUnchanged().catch(() => true));
+      if (!valid) return { state: 'seat_freed', license: describeLicense(license), publicKeyChanged };
+      return { state: 'ok', license: describeLicense(license), publicKeyChanged };
     } catch (err) {
       if (classifyError(err) === 'refused') return { state: 'refused', message: err.message, status: err.status };
       return { state: 'offline', message: err.message, ...(await verifyOffline()) };
@@ -115,11 +136,54 @@ export function createLicensing({ createClient, secrets, state, settings, instan
   }
 
   async function deactivate() {
-    const { key, token } = requireKey();
+    const { key, token, simulated = [] } = requireKey();
+    for (const machine of simulated) await client().deactivate(key, machine.token).catch(() => {});
     if (token) await client().deactivate(key, token);
     secrets.clear();
     state.update({ offlineFile: null });
     return { outcome: 'deactivated' };
+  }
+
+  // --- Seats, for the demo -------------------------------------------
+  // A real app activates once, as itself. These let one machine show
+  // what happens on several: other machines taking seats, the limit,
+  // and this machine's seat being freed from somewhere else.
+
+  // Activates the key under another machine id, as a second (then third)
+  // computer would. The demo license allows two machines, so the third
+  // is refused by the server.
+  async function simulateAnotherMachine() {
+    const saved = requireKey();
+    const simulated = saved.simulated ?? [];
+    const id = `${instanceId()}:machine-${simulated.length + 2}`;
+    try {
+      const result = await client().activate(saved.key, id);
+      if (!result.token) return { outcome: 'already_activated_without_token', machine: simulated.length + 2 };
+      secrets.set({ ...saved, simulated: [...simulated, { id, token: result.token }] });
+      return { outcome: 'activated', machine: simulated.length + 2, machines: simulated.length + 2 };
+    } catch (err) {
+      if (classifyError(err) === 'refused') return { outcome: 'refused', machine: simulated.length + 2, message: err.message };
+      throw err;
+    }
+  }
+
+  async function freeSimulatedMachines() {
+    const saved = requireKey();
+    for (const machine of saved.simulated ?? []) await client().deactivate(saved.key, machine.token);
+    secrets.set({ ...saved, simulated: [] });
+    return { outcome: 'freed', count: (saved.simulated ?? []).length };
+  }
+
+  // Frees this machine's seat as the license portal or another machine
+  // would - with this machine's token - but keeps the key stored here, so
+  // the next launch check finds the license good and this machine no
+  // longer activated: the case validate() exists to catch.
+  async function freeThisSeatElsewhere() {
+    const saved = requireKey();
+    if (!saved.token) return { outcome: 'not_activated' };
+    await client().deactivate(saved.key, saved.token);
+    secrets.set({ ...saved, token: null });
+    return { outcome: 'freed' };
   }
 
   async function usage() {
@@ -139,13 +203,29 @@ export function createLicensing({ createClient, secrets, state, settings, instan
       hasKey: Boolean(saved?.key),
       keyHint: saved?.key ? `…${saved.key.slice(-4)}` : null,
       activated: Boolean(saved?.token),
+      simulatedMachines: (saved?.simulated ?? []).length,
       offlineFile: offlineFile ? describeFile(offlineFile) : null,
       lastCheckedAt: lastCheckedAt ?? null,
       instanceId: instanceId(),
     };
   }
 
-  return { activate, launchCheck, deactivate, exportOffline, verifyOffline, usage, trackUsage, status, checkPublicKeyUnchanged };
+  return {
+    activate,
+    reactivate,
+    launchCheck,
+    deactivate,
+    exportOffline,
+    verifyOffline,
+    usage,
+    trackUsage,
+    status,
+    checkPublicKeyUnchanged,
+    trustNewPublicKey,
+    simulateAnotherMachine,
+    freeSimulatedMachines,
+    freeThisSeatElsewhere,
+  };
 }
 
 function describeLicense(license) {

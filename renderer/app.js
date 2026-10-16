@@ -36,6 +36,10 @@ async function refreshStatus() {
     ? `Key ${s.keyHint}, ${s.activated ? 'activated on this machine' : 'not activated here'}.` +
       (s.lastCheckedAt ? ` Last checked with the server ${new Date(s.lastCheckedAt).toLocaleString()}.` : '')
     : LAUNCH_TEXT.no_key[1];
+  $('machines-summary').textContent = s.hasKey
+    ? `Seats this app knows it's using: ${(s.activated ? 1 : 0) + s.simulatedMachines} of 2` +
+      ` (this machine ${s.activated ? 'activated' : 'not activated'}, ${s.simulatedMachines} simulated).`
+    : 'Activate a license first.';
   if (s.offlineFile) {
     const expires = s.offlineFile.expiresAt ? `expires ${new Date(s.offlineFile.expiresAt).toLocaleString()}` : 'never expires';
     $('offline-summary').textContent = `A license file is saved (${s.offlineFile.tier} tier, ${expires}).`;
@@ -58,7 +62,57 @@ async function launchCheck() {
   }
   const [kind, text] = LAUNCH_TEXT[r.state] ?? ['bad', r.state];
   show($('license-state'), kind, [text, describeLicense(r.license), r.message]);
+  $('reactivate').hidden = r.state !== 'seat_freed';
+  $('key-warning').hidden = !r.publicKeyChanged;
+  await refreshStatus();
 }
+
+$('reactivate').addEventListener('click', async () => {
+  const res = await window.licensing.reactivate();
+  if (!res.ok) return show($('license-state'), 'bad', [res.error]);
+  if (res.value.outcome !== 'activated') {
+    return show($('license-state'), 'warn', ['This machine is activated, but its token is gone. Free the seat from the license portal, then try again.']);
+  }
+  $('reactivate').hidden = true;
+  show($('license-state'), 'good', ['Activated again.', describeLicense(res.value.license)]);
+  await refreshStatus();
+});
+
+$('trust-key').addEventListener('click', async () => {
+  const res = await window.licensing.trustNewPublicKey();
+  if (!res.ok) return show($('license-state'), 'bad', [res.error]);
+  $('key-warning').hidden = true;
+  show($('offline-state'), 'good', ['Pinned the new key, and exported a fresh license file signed with it.']);
+  await refreshStatus();
+});
+
+$('simulate-machine').addEventListener('click', async () => {
+  const res = await window.licensing.simulateAnotherMachine();
+  if (!res.ok) return show($('machines-state'), res.code === 'no_key' ? 'muted' : 'bad', [res.code === 'no_key' ? 'Activate a license first.' : res.error]);
+  const r = res.value;
+  if (r.outcome === 'activated') show($('machines-state'), 'good', [`Machine ${r.machine} activated: it took a seat.`]);
+  else if (r.outcome === 'refused') show($('machines-state'), 'bad', [`Machine ${r.machine} was refused: every seat is taken.`, r.message]);
+  else show($('machines-state'), 'warn', [`Machine ${r.machine} is already activated, without a token here.`]);
+  await refreshStatus();
+});
+
+$('free-simulated').addEventListener('click', async () => {
+  const res = await window.licensing.freeSimulatedMachines();
+  if (!res.ok) return show($('machines-state'), 'bad', [res.error]);
+  show($('machines-state'), 'muted', [`Freed ${res.value.count} simulated machine${res.value.count === 1 ? '' : 's'}.`]);
+  await refreshStatus();
+});
+
+$('free-this-seat').addEventListener('click', async () => {
+  const res = await window.licensing.freeThisSeatElsewhere();
+  if (!res.ok) return show($('machines-state'), 'bad', [res.error]);
+  if (res.value.outcome === 'not_activated') return show($('machines-state'), 'muted', ['This machine is not activated.']);
+  show($('machines-state'), 'warn', [
+    "This machine's seat was freed, as the license portal or another machine would.",
+    'The key is still stored here. Run the launch check: the license is still good, but validate() says this machine is no longer activated.',
+  ]);
+  await refreshStatus();
+});
 
 $('activate-form').addEventListener('submit', async (event) => {
   event.preventDefault();

@@ -71,6 +71,28 @@ h2 {
   font-size: 13px;
 }
 
+.banner {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 8px 24px 0;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.banner button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.banner[hidden],
+button[hidden] {
+  display: none;
+}
+
 main {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);

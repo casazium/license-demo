@@ -54,7 +54,7 @@ describe('activate', () => {
     const result = await licensing.activate('  KEY-1  ');
     expect(result.outcome).toBe('activated');
     expect(result.license.tier).toBe('pro');
-    expect(store.secrets.get()).toEqual({ key: 'KEY-1', token: 'tok-1' });
+    expect(store.secrets.get()).toEqual({ key: 'KEY-1', token: 'tok-1', simulated: [] });
     expect(store.state.get().offlineFile.signature).toBe('sig');
     expect(store.state.get().publicKey).toBe('PUBLIC KEY');
   });
@@ -220,5 +220,91 @@ describe('the recording fetch', () => {
   test('mask keeps only the last four characters', () => {
     expect(mask('abcdefgh')).toBe('****efgh');
     expect(mask('abc')).toBe('****');
+  });
+});
+
+describe('seats, for the demo', () => {
+  async function activatedWithSeats(limit = 2) {
+    const active = new Map(); // id -> token
+    let next = 0;
+    const ctx = setup({
+      activate: async (_key, id) => {
+        if (active.has(id)) return { activated: true, alreadyActivated: true };
+        if (active.size >= limit) return Promise.reject(httpError(403, 'Activation limit exceeded for this license key'));
+        const token = `tok-${++next}`;
+        active.set(id, token);
+        return { activated: true, token };
+      },
+      deactivate: async (_key, token) => {
+        for (const [id, t] of active) if (t === token) active.delete(id);
+        return { deactivated: true };
+      },
+      validate: async (_key, id) => ({ valid: active.has(id) }),
+    });
+    await ctx.licensing.activate('KEY-1');
+    return { ...ctx, active };
+  }
+
+  test('a simulated second machine takes the second seat; a third is refused at the limit', async () => {
+    const { licensing, active } = await activatedWithSeats();
+    expect(await licensing.simulateAnotherMachine()).toMatchObject({ outcome: 'activated', machine: 2 });
+    expect([...active.keys()]).toEqual(['machine-1', 'machine-1:machine-2']);
+    const third = await licensing.simulateAnotherMachine();
+    expect(third).toMatchObject({ outcome: 'refused', machine: 3 });
+    expect(third.message).toMatch(/limit/);
+    expect(licensing.status().simulatedMachines).toBe(1);
+  });
+
+  test('freeing the simulated machines frees their seats and keeps this one', async () => {
+    const { licensing, active } = await activatedWithSeats();
+    await licensing.simulateAnotherMachine();
+    expect(await licensing.freeSimulatedMachines()).toEqual({ outcome: 'freed', count: 1 });
+    expect([...active.keys()]).toEqual(['machine-1']);
+    expect(licensing.status()).toMatchObject({ activated: true, simulatedMachines: 0 });
+  });
+
+  test("this machine's seat freed elsewhere: the launch check says seat_freed, and reactivate fixes it", async () => {
+    const { licensing, active } = await activatedWithSeats();
+    await licensing.simulateAnotherMachine();
+    expect(await licensing.freeThisSeatElsewhere()).toEqual({ outcome: 'freed' });
+    expect(active.has('machine-1')).toBe(false);
+    expect(licensing.status()).toMatchObject({ hasKey: true, activated: false });
+    expect((await licensing.launchCheck()).state).toBe('seat_freed');
+
+    expect((await licensing.reactivate()).outcome).toBe('activated');
+    expect((await licensing.launchCheck()).state).toBe('ok');
+    // Re-activating kept the simulated machine.
+    expect(licensing.status().simulatedMachines).toBe(1);
+  });
+
+  test('deactivate also frees the simulated machines', async () => {
+    const { licensing, active } = await activatedWithSeats();
+    await licensing.simulateAnotherMachine();
+    await licensing.deactivate();
+    expect(active.size).toBe(0);
+  });
+});
+
+describe('a changed public key', () => {
+  test('the launch check flags it; trusting the new key re-pins it and replaces the offline file', async () => {
+    const ctx = setup();
+    await ctx.licensing.activate('KEY-1');
+    expect((await ctx.licensing.launchCheck()).publicKeyChanged).toBe(false);
+
+    ctx.client.getPublicKey = async () => 'NEW PUBLIC KEY';
+    ctx.client.exportOfflineLicense = async () => ({ license: { key: 'k', tier: 'pro' }, signature: 'new-sig' });
+    expect((await ctx.licensing.launchCheck()).publicKeyChanged).toBe(true);
+
+    expect((await ctx.licensing.trustNewPublicKey()).outcome).toBe('repinned');
+    expect(ctx.store.state.get().publicKey).toBe('NEW PUBLIC KEY');
+    expect(ctx.store.state.get().offlineFile.signature).toBe('new-sig');
+    expect((await ctx.licensing.launchCheck()).publicKeyChanged).toBe(false);
+  });
+
+  test("a failure fetching the key during the launch check doesn't fail the check", async () => {
+    const ctx = setup();
+    await ctx.licensing.activate('KEY-1');
+    ctx.client.getPublicKey = async () => Promise.reject(new TypeError('fetch failed'));
+    expect(await ctx.licensing.launchCheck()).toMatchObject({ state: 'ok', publicKeyChanged: false });
   });
 });

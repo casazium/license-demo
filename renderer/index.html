@@ -18,6 +18,15 @@
       <p class="sub">A desktop app using License Server the way yours would. Every call it makes is listed on the right.</p>
     </header>
 
+    <div id="key-warning" class="banner" hidden>
+      <div>
+        <strong>The server's signing key has changed.</strong>
+        This app pinned a different public key. Offline license files signed with the old key won't verify,
+        and a key you didn't expect to change can mean the app is talking to a different server.
+      </div>
+      <button id="trust-key" class="secondary">Trust the new key</button>
+    </div>
+
     <main>
       <div class="panels">
         <section id="license" class="panel">
@@ -31,7 +40,20 @@
           </form>
           <div class="row">
             <button id="launch-check">Run the launch check</button>
+            <button id="reactivate" class="secondary" hidden>Activate this machine again</button>
             <button id="deactivate" class="secondary">Deactivate this machine</button>
+          </div>
+        </section>
+
+        <section id="machines" class="panel">
+          <h2>Machines</h2>
+          <p class="hint">The demo license allows two machines. These buttons act as other computers would, so one machine can show the limit and a seat freed from somewhere else.</p>
+          <p id="machines-summary" class="summary"></p>
+          <div id="machines-state" class="state"></div>
+          <div class="row">
+            <button id="simulate-machine">Simulate another machine</button>
+            <button id="free-simulated" class="secondary">Free the simulated machines</button>
+            <button id="free-this-seat" class="secondary">Free this machine's seat elsewhere</button>
           </div>
         </section>
 

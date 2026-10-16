@@ -15,7 +15,14 @@ It shows the four moments from the guide
   key alone, when the server can't be reached.
 - **Moving machines**: deactivate to free the seat.
 
-Plus a **usage limit**, counted per key.
+Plus a **usage limit**, counted per key, and a **Machines** panel that
+acts as other computers would: a second machine taking the other seat,
+a third refused at the limit, and this machine's seat freed from
+somewhere else - which the launch check catches with `validate()`.
+
+If the server's signing key ever changes, the app says so: offline
+license files signed with the old key stop verifying, and an
+unexpected change can mean a different server.
 
 ## Run it
 
