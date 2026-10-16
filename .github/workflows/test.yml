@@ -1,0 +1,38 @@
+# Tests on every push and pull request, on GitHub-hosted runners.
+#
+# This repository is public: anyone can open a pull request, and its code
+# runs here. So the job gets a read-only token, uses `pull_request` (never
+# `pull_request_target`), and the actions are pinned to exact commits.
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      # The unit tests don't start Electron, so skip its ~100 MB download.
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - run: npm test
+      # The app's own dependencies (the SDK), not the dev tools.
+      - run: npm audit --omit=dev --audit-level=high

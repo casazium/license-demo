@@ -1,0 +1,16 @@
+# Weekly updates for npm packages (Electron included, for its security
+# fixes) and for the pinned GitHub Actions.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dev-tools:
+        dependency-type: development
+        exclude-patterns: [electron]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
