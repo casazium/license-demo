@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Nothing remote, no inline script, no eval: the page can only run
+         this app's own files, and reach the main process through the
+         preload's bridge. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Casazium License demo</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Casazium License demo</h1>
+      <p class="sub">A desktop app using License Server the way yours would. Every call it makes is listed on the right.</p>
+    </header>
+
+    <main>
+      <div class="panels">
+        <section id="license" class="panel">
+          <h2>License</h2>
+          <p class="hint">Activate once per machine. On every start the app checks the license and that <em>this</em> machine is still activated.</p>
+          <p id="license-summary" class="summary"></p>
+          <div id="license-state" class="state"></div>
+          <form id="activate-form" class="row">
+            <input id="key-input" type="text" placeholder="Paste a license key" autocomplete="off" spellcheck="false" />
+            <button type="submit">Activate</button>
+          </form>
+          <div class="row">
+            <button id="launch-check">Run the launch check</button>
+            <button id="deactivate" class="secondary">Deactivate this machine</button>
+          </div>
+        </section>
+
+        <section id="offline" class="panel">
+          <h2>Offline</h2>
+          <p class="hint">A signed license file, verified with the server's public key alone. No network needed.</p>
+          <p id="offline-summary" class="summary"></p>
+          <div id="offline-state" class="state"></div>
+          <div class="row">
+            <label class="switch"><input id="offline-switch" type="checkbox" /> Act as if offline</label>
+            <button id="verify-offline">Verify the file</button>
+            <button id="export-offline" class="secondary">Export a fresh file</button>
+          </div>
+        </section>
+
+        <section id="usage" class="panel">
+          <h2>Usage</h2>
+          <p class="hint">A metered action, counted against the license's limit.</p>
+          <div id="usage-state" class="state"></div>
+          <div class="row">
+            <button id="use-once">Export (uses 1)</button>
+            <button id="refresh-usage" class="secondary">Refresh</button>
+          </div>
+        </section>
+
+        <section id="settings" class="panel">
+          <h2>Server</h2>
+          <form id="settings-form">
+            <label>Server URL <input id="server-url" type="url" spellcheck="false" /></label>
+            <label>Product UUID <input id="product-uuid" type="text" spellcheck="false" /></label>
+            <div class="row"><button type="submit">Save</button><span id="settings-note" class="note"></span></div>
+          </form>
+          <p id="storage-note" class="note"></p>
+        </section>
+      </div>
+
+      <aside id="calls">
+        <div class="calls-head">
+          <h2>Calls</h2>
+          <button id="clear-calls" class="secondary small">Clear</button>
+        </div>
+        <p class="hint">What the SDK sent and got back. Keys and tokens are masked.</p>
+        <ol id="call-list"></ol>
+      </aside>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

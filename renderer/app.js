@@ -1,0 +1,176 @@
+// The page. It shows state and sends button presses to the main process;
+// it makes no licensing decisions itself (window.licensing is the
+// preload's bridge, and every call returns { ok, value } or
+// { ok: false, error, status }).
+
+const $ = (id) => document.getElementById(id);
+
+function show(el, kind, lines) {
+  el.className = `state ${kind}`;
+  el.replaceChildren(...lines.filter(Boolean).map((line) => Object.assign(document.createElement('div'), { textContent: line })));
+}
+
+function describeLicense(license) {
+  if (!license) return null;
+  const expires = license.expiresAt ? `expires ${new Date(license.expiresAt).toLocaleString()}` : 'never expires';
+  return `${license.tier ?? 'unknown'} tier, ${license.productId ?? 'unknown product'}, ${expires}`;
+}
+
+const LAUNCH_TEXT = {
+  ok: ['good', 'License good, and this machine is activated.'],
+  seat_freed: ['warn', "License good, but this machine's seat was freed elsewhere. Activate again to use it here."],
+  refused: ['bad', 'The server refused this license.'],
+  no_key: ['muted', 'No license on this machine yet. Paste a key and activate.'],
+};
+
+async function refreshStatus() {
+  const res = await window.licensing.status();
+  if (!res.ok) return show($('license-state'), 'bad', [res.error]);
+  const s = res.value;
+  $('storage-note').textContent = s.secretsProtected
+    ? 'The key and token are stored in the system keychain.'
+    : 'No system keychain here: the key and token are stored, but not protected.';
+  // The summary lines describe what's stored; the state boxes below them
+  // show the result of the last action, and are left alone here.
+  $('license-summary').textContent = s.hasKey
+    ? `Key ${s.keyHint}, ${s.activated ? 'activated on this machine' : 'not activated here'}.` +
+      (s.lastCheckedAt ? ` Last checked with the server ${new Date(s.lastCheckedAt).toLocaleString()}.` : '')
+    : LAUNCH_TEXT.no_key[1];
+  if (s.offlineFile) {
+    const expires = s.offlineFile.expiresAt ? `expires ${new Date(s.offlineFile.expiresAt).toLocaleString()}` : 'never expires';
+    $('offline-summary').textContent = `A license file is saved (${s.offlineFile.tier} tier, ${expires}).`;
+  } else {
+    $('offline-summary').textContent = 'No license file saved yet. One is exported when you activate.';
+  }
+}
+
+async function launchCheck() {
+  const res = await window.licensing.launchCheck({ offline: $('offline-switch').checked });
+  if (!res.ok) return show($('license-state'), 'bad', [res.error]);
+  const r = res.value;
+  if (r.state === 'offline') {
+    const why = r.forced ? 'Acting as if offline' : `Couldn't reach the server (${r.message})`;
+    return show($('license-state'), r.valid ? 'good' : 'bad', [
+      `${why}: the license file decides.`,
+      r.valid ? 'The file verifies: the app keeps working.' : `The file doesn't verify${r.reason ? ` (${r.reason})` : ''}.`,
+      r.clockWentBack ? "This machine's clock has gone backwards since the last check." : null,
+    ]);
+  }
+  const [kind, text] = LAUNCH_TEXT[r.state] ?? ['bad', r.state];
+  show($('license-state'), kind, [text, describeLicense(r.license), r.message]);
+}
+
+$('activate-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const key = $('key-input').value.trim();
+  if (!key) return;
+  show($('license-state'), 'muted', ['Activating…']);
+  const res = await window.licensing.activate(key);
+  if (!res.ok) return show($('license-state'), 'bad', [res.error]);
+  if (res.value.outcome === 'already_activated_without_token') {
+    return show($('license-state'), 'warn', [
+      'This machine was activated before, but its activation token is gone (a reinstall?).',
+      'Free the seat from the license portal, then activate again.',
+    ]);
+  }
+  $('key-input').value = '';
+  show($('license-state'), 'good', ['Activated.', describeLicense(res.value.license)]);
+  await refreshStatus();
+  await refreshUsage();
+});
+
+$('launch-check').addEventListener('click', launchCheck);
+
+$('deactivate').addEventListener('click', async () => {
+  const res = await window.licensing.deactivate();
+  if (!res.ok) return show($('license-state'), 'bad', [res.error]);
+  show($('license-state'), 'muted', ["Deactivated: this machine's seat is free, and the key can be activated elsewhere."]);
+  await refreshStatus();
+});
+
+$('verify-offline').addEventListener('click', async () => {
+  const res = await window.licensing.verifyOffline();
+  if (!res.ok) return show($('offline-state'), 'bad', [res.error]);
+  const r = res.value;
+  show($('offline-state'), r.valid ? 'good' : 'bad', [
+    r.valid ? 'Verified offline: signature, product and expiry all check out.' : `Doesn't verify${r.reason ? ` (${r.reason})` : ''}.`,
+    'Checked against the public key alone - no network call.',
+    r.clockWentBack ? "This machine's clock has gone backwards since the last check." : null,
+  ]);
+});
+
+$('export-offline').addEventListener('click', async () => {
+  const res = await window.licensing.exportOffline();
+  if (!res.ok) return show($('offline-state'), 'bad', [res.error]);
+  await refreshStatus();
+});
+
+async function refreshUsage() {
+  const res = await window.licensing.usage();
+  if (!res.ok) return show($('usage-state'), res.code === 'no_key' ? 'muted' : 'bad', [res.code === 'no_key' ? 'Activate a license first.' : res.error]);
+  const metric = (res.value.metrics ?? []).find((m) => m.metric === 'api_calls_per_day');
+  if (!metric) return show($('usage-state'), 'muted', ['This license has no usage limit.']);
+  show($('usage-state'), metric.exceeded ? 'bad' : 'muted', [`${metric.used} of ${metric.limit} used with this key.`]);
+}
+
+$('use-once').addEventListener('click', async () => {
+  const res = await window.licensing.trackUsage();
+  if (!res.ok) {
+    await refreshUsage();
+    return show($('usage-state'), 'bad', [res.error]);
+  }
+  await refreshUsage();
+});
+$('refresh-usage').addEventListener('click', refreshUsage);
+
+async function loadSettings() {
+  const res = await window.app.getSettings();
+  if (!res.ok) return;
+  $('server-url').value = res.value.serverUrl;
+  $('product-uuid').value = res.value.productUuid;
+}
+
+$('settings-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const res = await window.app.saveSettings({ serverUrl: $('server-url').value, productUuid: $('product-uuid').value });
+  $('settings-note').textContent = res.ok ? 'Saved.' : res.error;
+  await refreshStatus();
+});
+
+function addCall(call) {
+  const item = document.createElement('li');
+  const head = document.createElement('div');
+  head.className = 'call-head';
+  const path = (() => {
+    try {
+      return new URL(call.url).pathname.replace(/^\/v1/, '');
+    } catch {
+      return call.url;
+    }
+  })();
+  head.textContent = `${call.method} ${path}  ${call.status ?? 'failed'}  ${call.ms} ms`;
+  item.className = call.status && call.status < 400 ? 'ok' : 'err';
+  const body = document.createElement('pre');
+  body.textContent = JSON.stringify({ request: call.request, response: call.response, error: call.error }, null, 2);
+  item.append(head, body);
+  $('call-list').prepend(item);
+}
+
+$('clear-calls').addEventListener('click', async () => {
+  await window.app.clearCalls();
+  $('call-list').replaceChildren();
+});
+
+window.app.onCall(addCall);
+
+(async () => {
+  await loadSettings();
+  const existing = await window.app.calls();
+  if (existing.ok) existing.value.forEach(addCall);
+  await refreshStatus();
+  // The launch check: once, at start.
+  if ((await window.licensing.status()).value?.hasKey) {
+    await launchCheck();
+    await refreshUsage();
+  }
+})();

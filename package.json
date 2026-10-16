@@ -1,0 +1,25 @@
+{
+  "name": "license-demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A small Electron app showing how a desktop app uses Casazium License Server: activation, the launch check, offline license files, moving machines and usage limits.",
+  "license": "MIT",
+  "type": "module",
+  "main": "main/main.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "vitest run",
+    "seed:local": "node scripts/seed-local.mjs"
+  },
+  "dependencies": {
+    "@casazium/license-sdk": "0.4.0"
+  },
+  "devDependencies": {
+    "electron": "44.7.2",
+    "playwright-core": "1.64.1",
+    "vitest": "5.0.5"
+  }
+}

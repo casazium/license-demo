@@ -1,0 +1,77 @@
+// The fetch the SDK calls through. The SDK accepts a `fetch` option, so
+// the app can add what every real integration needs - a timeout, and in
+// Electron the system proxy settings - and, for this demo, record each
+// call for the developer panel. The SDK itself is unchanged.
+
+const SECRET_FIELDS = new Set(['key', 'token', 'instance_id', 'signature', 'portal_token']);
+
+// Keys, activation tokens and portal links stay out of the call log:
+// only their last four characters are shown.
+export function mask(value) {
+  if (typeof value !== 'string' || value.length <= 4) return '****';
+  return `****${value.slice(-4)}`;
+}
+
+function maskBody(body) {
+  if (Array.isArray(body)) return body.map(maskBody);
+  if (!body || typeof body !== 'object') return body;
+  return Object.fromEntries(
+    Object.entries(body).map(([k, v]) => [k, SECRET_FIELDS.has(k) ? mask(v) : maskBody(v)])
+  );
+}
+
+// A license key can appear in a URL path (/export-license/:key/offline).
+function maskUrl(url, secrets) {
+  let masked = url;
+  for (const secret of secrets) {
+    if (secret) masked = masked.split(encodeURIComponent(secret)).join(mask(secret));
+  }
+  return masked;
+}
+
+function parseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * @param {object} options
+ * @param {typeof fetch} options.baseFetch - Electron's net.fetch in the app; any fetch in tests
+ * @param {number} [options.timeoutMs]
+ * @param {(call: object) => void} options.onCall - receives each finished call
+ * @param {() => string[]} [options.secrets] - values to mask wherever they appear in a URL
+ * @param {() => number} [options.now]
+ */
+export function createRecordingFetch({ baseFetch, timeoutMs = 5000, onCall, secrets = () => [], now = () => Date.now() }) {
+  return async function recordingFetch(url, init = {}) {
+    const started = now();
+    const request = init.body ? maskBody(parseJson(init.body)) : undefined;
+    const call = { method: init.method ?? 'GET', url: maskUrl(String(url), secrets()), request, startedAt: started };
+    try {
+      const res = await baseFetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      // Read the body once here, for the log, and hand the SDK a response
+      // it can still read.
+      const text = await res.text();
+      onCall({ ...call, status: res.status, response: maskBody(parseJson(text)), ms: now() - started });
+      return new Response(text, { status: res.status, headers: res.headers });
+    } catch (err) {
+      onCall({ ...call, error: err.name === 'TimeoutError' ? `no answer in ${timeoutMs} ms` : err.message, ms: now() - started });
+      throw err;
+    }
+  };
+}
+
+/**
+ * What an SDK error means for the app. The SDK puts the HTTP status on
+ * `err.status` (0.4.0+); a network failure or timeout has none.
+ *   refused     - the server answered no (a 4xx other than 429)
+ *   unreachable - no usable answer: offline, timed out, rate limited, or a server error
+ */
+export function classifyError(err) {
+  const status = err?.status;
+  if (typeof status === 'number' && status >= 400 && status < 500 && status !== 429) return 'refused';
+  return 'unreachable';
+}
