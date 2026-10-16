@@ -69,9 +69,13 @@ export function createLicensing({
 
   function requireProduct() {
     if (!productUuid()) {
-      throw Object.assign(new Error("Set the product UUID first: it's how the app knows a license is for this product"), {
-        code: 'no_product',
-      });
+      throw Object.assign(
+        new Error(
+          "Set the product UUID first - it's how the app knows a license is for this product. " +
+            "In Server settings, or with \"Use the demo server's settings\" under Demo keys."
+        ),
+        { code: 'no_product' }
+      );
     }
   }
 

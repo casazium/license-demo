@@ -37,13 +37,15 @@ function jsonFile(name, defaults) {
 
 export const state = jsonFile('state.json', { seed: null });
 
+// The Casazium demo server, so the app works as soon as it's installed.
+// The product UUID comes from the demo helper's seed.json at start; point
+// the app at your own server in its Server settings.
 export const DEFAULT_SETTINGS = {
-  // The demo server once it exists; a local server until then.
-  serverUrl: 'http://localhost:3001/v1',
+  serverUrl: 'https://demo-license-api.casazium.com/v1',
   productUuid: '',
   // The demo server's helper, which publishes seed.json. Empty for any
   // other server.
-  helperUrl: '',
+  helperUrl: 'https://demo-license.casazium.com',
 };
 export const settings = jsonFile('settings.json', DEFAULT_SETTINGS);
 

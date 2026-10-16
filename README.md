@@ -48,26 +48,36 @@ and pins it instead, and warns if the server's key later changes.
 
 ## Run it
 
-You need Node.js 22.12 or later, and a License Server to point it at.
-To run one on your machine with Docker (30-day evaluation mode):
+You need Node.js 22.12 or later.
+
+```bash
+npm install
+npm start
+```
+
+The app starts pointed at the Casazium demo server. Click **Get a demo
+key**, pay with Stripe's test card `4242 4242 4242 4242` (any future date,
+any CVC - nothing is charged), and paste the key it shows you into
+**License**. Demo keys last a day and work on two machines.
+
+### Against your own server
+
+Any License Server works - a [hosted account](https://casazium.com/pricing),
+or one you run yourself. To run one on your machine with Docker (30-day
+evaluation mode):
 
 ```bash
 docker run -d --name license-server -p 127.0.0.1:3001:3001 \
   -e CASAZIUM_UNLICENSED_EVAL=1 -e AUTO_GENERATE_SECRETS=true \
   -e ADMIN_API_KEY=choose-a-long-random-admin-key \
   ghcr.io/casazium/license:latest
-```
-
-Then issue a demo license, and start the app:
-
-```bash
-npm install
 LICENSE_SERVER_URL=http://localhost:3001/v1 ADMIN_API_KEY=choose-a-long-random-admin-key npm run seed:local
-npm start
 ```
 
-In the app, set the server URL and the product UUID the seed printed,
-then paste the license key and activate.
+In the app's **Server** settings, set the server URL and the product UUID
+the seed printed, and clear the demo helper URL. Then paste the license
+key and activate. (Deactivate first if a demo license is active: a stored
+license belongs to the server it was activated on.)
 
 **[How it works](docs/how-it-works.md)** walks through each part - the
 SDK calls behind it, and why - and what to change to take it into your own

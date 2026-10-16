@@ -259,6 +259,8 @@ const DEMO_KINDS = ['revoked', 'expired', 'business'];
 
 async function refreshSeed({ reload = false } = {}) {
   const res = reload ? await demo.loadSeed() : await demo.seed();
+  // A fresh install just took the demo server's settings from seed.json.
+  if (res.ok && res.value?.applied) await loadSettings();
   const seed = res.ok ? (reload ? (res.value.loaded ? res.value : null) : res.value) : null;
   const ready = Boolean(seed?.matchesSettings);
   for (const kind of DEMO_KINDS) $(`try-${kind}`).disabled = !ready || !seed.kinds.includes(kind);

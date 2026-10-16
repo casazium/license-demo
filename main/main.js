@@ -114,7 +114,18 @@ handle('licensing:exportOffline', () => licensing.exportOffline());
 handle('licensing:verifyOffline', () => licensing.verifyOffline());
 handle('licensing:usage', () => licensing.usage());
 handle('licensing:trackUsage', () => licensing.trackUsage('api_calls_per_day'));
-handle('seed:load', () => licensing.loadSeed());
+// Loads the demo helper's seed.json. On a fresh install - no product UUID
+// set and no license stored - it also adopts the seed's server and product,
+// so the demo works without any setup.
+handle('seed:load', async () => {
+  const seed = await licensing.loadSeed();
+  const current = settings.get();
+  if (seed.loaded && !current.productUuid && !licensing.status().hasKey && validServerUrl(seed.serverUrl)) {
+    settings.replace({ ...current, serverUrl: seed.serverUrl, productUuid: seed.productUuid });
+    return { ...licensing.seedSummary(), loaded: true, applied: true };
+  }
+  return seed;
+});
 handle('seed:summary', () => licensing.seedSummary());
 handle('seed:keyMatchesServer', () => licensing.seedKeyMatchesServer());
 handle('demo:try', (kind) => licensing.tryDemoKey(String(kind)));
