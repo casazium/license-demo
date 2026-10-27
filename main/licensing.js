@@ -29,9 +29,10 @@ const DAY = 24 * 60 * 60 * 1000;
  * @param {object} deps
  * @param {(options: object) => object} deps.createClient - builds an SDK client
  * @param {object} deps.vault - encrypted storage for everything the license
- *   decision depends on: { get(): object | null, set(object), clear() }.
- *   In the app it's safeStorage (the OS keychain), so editing a file on disk
- *   can't forge a pass.
+ *   decision depends on: { get(): object | null, set(object): Promise,
+ *   clear(): Promise }. In the app it's safeStorage (the OS keychain), so
+ *   editing a file on disk can't forge a pass. set() and clear() resolve
+ *   once the change is saved.
  * @param {object} deps.state - plain storage for things that aren't secret
  *   (the demo's seed.json): { get(): object, update(patch) }
  * @param {() => {serverUrl: string, productUuid: string, helperUrl?: string}} deps.settings
@@ -59,6 +60,7 @@ export function createLicensing({
   const productUuid = () => settings().productUuid;
 
   const record = () => vault.get();
+  // Resolves once the change is saved; await it.
   const update = (patch) => vault.set({ ...record(), ...patch });
 
   function requireKey() {
@@ -89,7 +91,7 @@ export function createLicensing({
     const pinned = record()?.publicKey;
     if (pinned) return pinned;
     const fetched = await client().getPublicKey();
-    update({ publicKey: fetched });
+    await update({ publicKey: fetched });
     return fetched;
   }
 
@@ -103,7 +105,7 @@ export function createLicensing({
   // app that ships its key gets a new key only with a new release.
   async function trustNewPublicKey() {
     if (builtInPublicKey) throw new Error('This app ships its public key; a new key comes with a new release');
-    update({ publicKey: await client().getPublicKey() });
+    await update({ publicKey: await client().getPublicKey() });
     const file = await exportOffline();
     return { outcome: 'repinned', offlineFile: file };
   }
@@ -114,7 +116,7 @@ export function createLicensing({
     const { key } = requireKey();
     const file = await client().exportOfflineLicense(key);
     await publicKey();
-    update({ offlineFile: file });
+    await update({ offlineFile: file });
     return describeFile(file);
   }
 
@@ -135,7 +137,7 @@ export function createLicensing({
     const current = now();
     const lastSeenAt = saved.lastSeenAt ?? 0;
     if (current < lastSeenAt) return { valid: false, reason: 'clock_went_back' };
-    update({ lastSeenAt: current });
+    await update({ lastSeenAt: current });
 
     if (saved.offlineFile.license?.key !== saved.key) return { valid: false, reason: 'not_this_key' };
     const key = await publicKey().catch(() => null);
@@ -163,6 +165,9 @@ export function createLicensing({
       if (classifyError(err) === 'refused') return { outcome: 'refused', message: err.message, status: err.status ?? null };
       throw err;
     }
+    // Read the vault before taking a seat: if it can't be read, fail now,
+    // not after the server has handed over a token there's nowhere to keep.
+    const previous = record();
     const result = await client().activate(trimmed, instanceId());
     if (result.alreadyActivated && !result.token) {
       // Activated on this machine before, but the token was lost (a
@@ -171,9 +176,8 @@ export function createLicensing({
       // machine activated again.
       return { outcome: 'already_activated_without_token' };
     }
-    const previous = record();
     try {
-      vault.set({
+      await vault.set({
         key: trimmed,
         token: result.token,
         lastCheckedAt: now(),
@@ -223,10 +227,10 @@ export function createLicensing({
         // Not activated here any more: the token is no use now, and the
         // offline file mustn't keep the app working either. The key stays,
         // so the machine can be activated again.
-        update({ offlineFile: null, token: null });
+        await update({ offlineFile: null, token: null });
         return { state: 'seat_freed', license: describeLicense(license) };
       }
-      update({ lastCheckedAt: now(), lastSeenAt: Math.max(now(), record().lastSeenAt ?? 0) });
+      await update({ lastCheckedAt: now(), lastSeenAt: Math.max(now(), record().lastSeenAt ?? 0) });
       // Refresh the file, so its expiry and terms follow the server's.
       await exportOffline().catch(() => {});
       // The server answered, so this is the time to notice a changed
@@ -237,7 +241,7 @@ export function createLicensing({
       if (classifyError(err) === 'refused') {
         // A real answer - revoked, expired, unknown key. Drop the offline
         // file, or going offline would undo the refusal.
-        update({ offlineFile: null });
+        await update({ offlineFile: null });
         return { state: 'refused', message: err.message, status: err.status ?? null };
       }
       return { state: 'offline', message: err.message, ...(await verifyOffline()) };
@@ -259,7 +263,7 @@ export function createLicensing({
     };
     for (const machine of simulated) await free(machine.token).catch(() => {});
     if (token) await free(token);
-    vault.clear();
+    await vault.clear();
     return { outcome: 'deactivated' };
   }
 
@@ -310,7 +314,7 @@ export function createLicensing({
     try {
       const result = await client().activate(saved.key, id);
       if (!result.token) return { outcome: 'already_activated_without_token', machine };
-      update({ simulated: [...(record().simulated ?? []), { id, token: result.token }] });
+      await update({ simulated: [...(record().simulated ?? []), { id, token: result.token }] });
       return { outcome: 'activated', machine };
     } catch (err) {
       if (classifyError(err) === 'refused') return { outcome: 'refused', machine, message: err.message };
@@ -328,7 +332,7 @@ export function createLicensing({
           if (classifyError(err) !== 'refused') throw err;
         });
     }
-    update({ simulated: [] });
+    await update({ simulated: [] });
     return { outcome: 'freed', count: simulated.length };
   }
 
@@ -341,7 +345,7 @@ export function createLicensing({
     if (!saved.token) return { outcome: 'not_activated' };
     const result = await client().deactivate(saved.key, saved.token);
     if (result?.deactivated === false) return { outcome: 'not_activated' };
-    update({ token: null });
+    await update({ token: null });
     return { outcome: 'freed' };
   }
 

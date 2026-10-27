@@ -105,7 +105,7 @@ function handle(channel, fn) {
   });
 }
 
-handle('licensing:status', () => ({ ...licensing.status(), secretsProtected: secretStorageProtected() }));
+handle('licensing:status', async () => ({ ...licensing.status(), secretsProtected: await secretStorageProtected() }));
 handle('licensing:activate', (key) => licensing.activate(String(key)));
 handle('licensing:launchCheck', (options) => licensing.launchCheck({ offline: Boolean(options?.offline) }));
 handle('licensing:deactivate', () => licensing.deactivate());
@@ -216,7 +216,9 @@ app.on('web-contents-created', (_event, contents) => {
   });
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Decrypt the stored license once, before anything reads it.
+  await vault.load();
   // The app needs no camera, microphone, notifications or anything else a
   // page can ask for.
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
