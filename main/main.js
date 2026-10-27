@@ -96,7 +96,11 @@ function handle(channel, fn) {
     try {
       return { ok: true, value: await run(...args) };
     } catch (err) {
-      return { ok: false, error: err.message, status: err.status ?? null, code: err.code ?? null };
+      // A 404 ending ": Not Found" is a route the server doesn't have.
+      const error = err.status === 404 && /: Not Found$/.test(err.message)
+        ? `${err.message}. The server doesn't have this route: check the server URL ends in /v1, and that it's License Server 1.21.0 or later.`
+        : err.message;
+      return { ok: false, error, status: err.status ?? null, code: err.code ?? null };
     }
   });
 }

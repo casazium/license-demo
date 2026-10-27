@@ -3,8 +3,8 @@
 This app is a small, real integration of
 [Casazium License Server](https://casazium.com) through its public SDK,
 [`@casazium/license-sdk`](https://www.npmjs.com/package/@casazium/license-sdk)
-(0.4.0 or later). Everything below maps to code you can copy. The parts
-that only exist so one computer can show what several would are marked
+(0.5.0 or later, which needs License Server 1.21.0 or later). Everything
+below maps to code you can copy. The parts that only exist so one computer can show what several would are marked
 **demo only** - leave them out of a real app.
 
 - [The shape of the app](#the-shape-of-the-app)
@@ -56,7 +56,9 @@ include those methods.
    only once, and it's the credential that frees the seat later, so it's
    stored straight away.
 3. **`exportOfflineLicense(key)`** - a signed license file, kept for when
-   the server can't be reached (see [Offline](#offline)).
+   the server can't be reached (see [Offline](#offline)). From SDK 0.5.0
+   it sends the key in the request body, not the URL, so proxies on the
+   way don't log it.
 
 Two cases worth handling as the app does:
 
@@ -156,11 +158,17 @@ in `calls.js` turns that into the one question the app cares about:
 
 | | Means |
 | --- | --- |
-| 4xx, except 429 | **Refused**: the server answered no. Believe it. |
+| 404 ending `: Not Found` | **Unreachable**: the server doesn't have that route. |
+| any other 4xx, except 429 | **Refused**: the server answered no. Believe it. |
 | 429, 5xx, no status | **Unreachable**: no usable answer. Fall back to the offline file. |
 
-A 429 means "slow down", not "no". The SDK's own refusal of a license for
-another product (`product_uuid mismatch`) counts as refused too.
+A 429 means "slow down", not "no". A 404 whose message ends `: Not Found`
+comes from a server URL missing `/v1`, or a server older than the SDK
+needs (SDK 0.5.0's exports need License Server 1.21.0); a refused key says
+`License key not found`. Treating the first as refused would drop a good
+offline file at launch, and forget a key whose seat is still taken. The
+SDK's own refusal of a license for another product (`product_uuid
+mismatch`) counts as refused too.
 
 The SDK client is built with **one retry** rather than its default three,
 and the `fetch` it uses times out after 5 seconds - so a server that
