@@ -62,8 +62,8 @@ any CVC - nothing is charged), and paste the key it shows you into
 
 ### Against your own server
 
-Any License Server works - a [hosted account](https://casazium.com/pricing),
-or one you run yourself. To run one on your machine with Docker (30-day
+Any License Server 1.21.0 or later works - a
+[hosted account](https://casazium.com/pricing), or one you run yourself. To run one on your machine with Docker (30-day
 evaluation mode):
 
 ```bash

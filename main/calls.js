@@ -21,7 +21,8 @@ function maskBody(body) {
   );
 }
 
-// A license key can appear in a URL path (/export-license/:key/offline).
+// SDKs before 0.5.0 put the license key in export URLs
+// (/export-license/:key/offline); kept for anyone running an older one.
 function maskUrl(url, secrets) {
   let masked = url;
   for (const secret of secrets) {
@@ -71,10 +72,17 @@ export function createRecordingFetch({ baseFetch, timeoutMs = 5000, onCall, secr
  * What an SDK error means for the app. The SDK puts the HTTP status on
  * `err.status` (0.4.0+); a network failure or timeout has none.
  *   refused     - the server answered no (a 4xx other than 429)
- *   unreachable - no usable answer: offline, timed out, rate limited, or a server error
+ *   unreachable - no usable answer: offline, timed out, rate limited, a
+ *                 server error, or a server without the route
  */
 export function classifyError(err) {
   const status = err?.status;
+  // A 404 ending ": Not Found" is a route the server doesn't have - a
+  // server URL missing /v1, or a server older than the SDK needs (SDK
+  // 0.5.0's exports need License Server 1.21.0) - not a refused key, which
+  // says "License key not found". Treating it as refused would drop a good
+  // offline file at launch, and forget a key whose seat is still taken.
+  if (status === 404 && /: Not Found$/.test(err?.message ?? '')) return 'unreachable';
   if (typeof status === 'number' && status >= 400 && status < 500 && status !== 429) return 'refused';
   // The SDK's own checks on a response the server sent successfully: the
   // license is for another product. A real answer, not a network problem.

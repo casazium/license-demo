@@ -135,6 +135,12 @@ describe('the launch check', () => {
     }
   });
 
+  test("a server without the route (a URL missing /v1, an older server) isn't a refusal: the file decides", async () => {
+    const { licensing, store } = await activated({ verifyKey: async () => Promise.reject(httpError(404, 'Not Found')) });
+    expect(await licensing.launchCheck()).toMatchObject({ state: 'offline', valid: true });
+    expect(store.vault.get().offlineFile.signature).toBe('sig');
+  });
+
   test('a product mismatch is refused, not "offline"', async () => {
     const mismatch = new Error('verifyKey: license belongs to a different product (product_uuid mismatch)');
     const { licensing } = await activated({ verifyKey: async () => Promise.reject(mismatch) });
@@ -232,6 +238,12 @@ describe('deactivate', () => {
     const { licensing, store } = await activated({ deactivate: async () => Promise.reject(httpError(404, 'License key not found')) });
     expect((await licensing.deactivate()).outcome).toBe('deactivated');
     expect(store.vault.get()).toBeNull();
+  });
+
+  test("keeps it when the server doesn't have the route (a URL missing /v1, an older server)", async () => {
+    const { licensing, store } = await activated({ deactivate: async () => Promise.reject(httpError(404, 'Not Found')) });
+    await expect(licensing.deactivate()).rejects.toThrow('404: Not Found');
+    expect(store.vault.get()).toMatchObject({ key: 'KEY-1', token: 'tok-1' });
   });
 
   test("keeps it when the server can't be reached, so the seat can still be freed", async () => {
@@ -409,6 +421,9 @@ describe('classifyError', () => {
     [httpError(400), 'refused'],
     [httpError(403), 'refused'],
     [httpError(404), 'refused'],
+    [httpError(404, 'License key not found'), 'refused'],
+    // A server older than SDK 0.5.0 needs: the export route is missing.
+    [httpError(404, 'Not Found'), 'unreachable'],
     [new Error('verifyKey: license belongs to a different product (product_uuid mismatch)'), 'refused'],
     [httpError(429), 'unreachable'],
     [httpError(500), 'unreachable'],
