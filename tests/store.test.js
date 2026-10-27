@@ -84,6 +84,28 @@ describe('the vault', () => {
     expect(vault.get().token).toBe('newer');
   });
 
+  test('a failed file write rejects, and leaves memory as it was', async () => {
+    const { vault } = await freshStore();
+    await vault.load();
+    await vault.set({ key: 'K', token: 'old' });
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+    await expect(vault.set({ key: 'K', token: 'new' })).rejects.toThrow('disk full');
+    rename.mockRestore();
+    expect(vault.get().token).toBe('old');
+  });
+
+  test('set() saves the value as it was when called', async () => {
+    const { vault } = await freshStore();
+    await vault.load();
+    const value = { key: 'K', simulated: [] };
+    const saving = vault.set(value);
+    value.simulated.push('changed afterwards');
+    await saving;
+    expect(vault.get().simulated).toEqual([]);
+  });
+
   test('saves land in the order they were made', async () => {
     const { vault } = await freshStore();
     await vault.load();

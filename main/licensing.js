@@ -165,6 +165,9 @@ export function createLicensing({
       if (classifyError(err) === 'refused') return { outcome: 'refused', message: err.message, status: err.status ?? null };
       throw err;
     }
+    // Read the vault before taking a seat: if it can't be read, fail now,
+    // not after the server has handed over a token there's nowhere to keep.
+    const previous = record();
     const result = await client().activate(trimmed, instanceId());
     if (result.alreadyActivated && !result.token) {
       // Activated on this machine before, but the token was lost (a
@@ -173,7 +176,6 @@ export function createLicensing({
       // machine activated again.
       return { outcome: 'already_activated_without_token' };
     }
-    const previous = record();
     try {
       await vault.set({
         key: trimmed,

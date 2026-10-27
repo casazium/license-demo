@@ -13,7 +13,19 @@ function memory() {
   let record = null;
   let data = {};
   return {
-    vault: { get: () => record, set: (v) => (record = v), clear: () => (record = null) },
+    // Async like the real vault: a change lands a tick later, so a write
+    // that isn't awaited shows up as a failing test.
+    vault: {
+      get: () => record,
+      set: async (v) => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        record = structuredClone(v);
+      },
+      clear: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        record = null;
+      },
+    },
     state: { get: () => data, update: (patch) => (data = { ...data, ...patch }) },
   };
 }
@@ -97,6 +109,15 @@ describe('activate', () => {
     };
     await expect(licensing.activate('KEY-1')).rejects.toThrow('keychain refused');
     expect(client.calls.at(-1)).toEqual(['deactivate', 'KEY-1', 'tok-1']);
+  });
+
+  test("an unreadable vault fails activation before a seat is taken", async () => {
+    const { licensing, store, client } = setup();
+    store.vault.get = () => {
+      throw Object.assign(new Error("The stored license can't be read"), { code: 'vault_unreadable' });
+    };
+    await expect(licensing.activate('KEY-1')).rejects.toThrow("can't be read");
+    expect(client.calls.map((c) => c[0])).not.toContain('activate');
   });
 
   test("gives the seat back if saving the token fails later (safeStorage is async)", async () => {
@@ -210,7 +231,7 @@ describe('offline', () => {
 
   test('a file for another key is refused, even when it verifies', async () => {
     const { licensing, store } = await activated();
-    store.vault.set({ ...store.vault.get(), offlineFile: offlineFile('SOMEONE-ELSES-KEY') });
+    await store.vault.set({ ...store.vault.get(), offlineFile: offlineFile('SOMEONE-ELSES-KEY') });
     expect(await licensing.verifyOffline()).toMatchObject({ valid: false, reason: 'not_this_key' });
   });
 

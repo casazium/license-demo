@@ -189,7 +189,9 @@ methods are deprecated in Electron 45 and removed in 46). So the app
 decrypts the vault once at start and keeps it in memory, and each change
 is encrypted and saved before the copy in memory changes. Every save is
 awaited: if one fails, the action fails with it - activating gives the
-seat back rather than leave a token it couldn't store.
+seat back rather than leave a token it couldn't store. If the keychain
+refuses when the app starts, the stored license stays unreadable until the
+app is restarted, and activating fails before it takes a seat.
 
 On Linux without a keychain, `safeStorage` falls back to encrypting with a
 fixed password, which protects nothing; the app says so rather than

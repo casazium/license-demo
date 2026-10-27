@@ -113,8 +113,8 @@ export const vault = {
     return current === null ? null : structuredClone(current);
   },
   set(value) {
+    const copy = structuredClone(value);
     const write = writes.then(async () => {
-      const copy = structuredClone(value);
       writeAtomic(vaultFile(), await safeStorage.encryptStringAsync(JSON.stringify(copy)));
       current = copy;
       unreadable = null;
