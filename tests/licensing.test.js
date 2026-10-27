@@ -99,6 +99,16 @@ describe('activate', () => {
     expect(client.calls.at(-1)).toEqual(['deactivate', 'KEY-1', 'tok-1']);
   });
 
+  test("gives the seat back if saving the token fails later (safeStorage is async)", async () => {
+    const { licensing, store, client } = setup();
+    store.vault.set = async () => {
+      await Promise.resolve();
+      throw new Error('keychain refused');
+    };
+    await expect(licensing.activate('KEY-1')).rejects.toThrow('keychain refused');
+    expect(client.calls.at(-1)).toEqual(['deactivate', 'KEY-1', 'tok-1']);
+  });
+
   test("a failed export doesn't fail the activation", async () => {
     const { licensing, store } = setup({ exportOfflineLicense: async () => Promise.reject(new TypeError('fetch failed')) });
     expect(await licensing.activate('KEY-1')).toMatchObject({ outcome: 'activated', offlineFile: null });
