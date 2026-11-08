@@ -15,7 +15,7 @@
     "seed:local": "node scripts/seed-local.mjs"
   },
   "dependencies": {
-    "@casazium/license-sdk": "0.5.1"
+    "@casazium/license-sdk": "0.6.0"
   },
   "devDependencies": {
     "electron": "45.2.1",

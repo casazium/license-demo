@@ -6,6 +6,12 @@
 // with safeStorage (the OS keychain on macOS and Windows). Editing a file
 // on disk can't forge a pass, and the key isn't readable on disk.
 //
+// The key sets learned from the server are encrypted the same way, in a
+// file of their own, because they outlive a license: deactivating clears
+// the vault, and a newer key set must not be forgotten with it. A set is
+// public and signed, but swapping in an older one would bring back a key
+// the server has since revoked.
+//
 // Plain JSON in the app's user-data folder holds only the settings and the
 // demo server's seed.json, which is public.
 import fs from 'node:fs';
@@ -58,77 +64,85 @@ export async function secretStorageProtected() {
   return safeStorage.getSelectedStorageBackend() !== 'basic_text';
 }
 
-const vaultFile = () => file('license.bin');
-
 // safeStorage encrypts and decrypts asynchronously (its synchronous
 // methods are deprecated in Electron 45 and removed in 46). The vault is
 // decrypted once, at start (load), and kept in memory, so reading it stays
 // synchronous. A write is encrypted and saved before the copy in memory
 // changes, and callers await it, so a failed save is never mistaken for a
 // saved one. Writes run one at a time, in order.
-let current; // undefined until load(); null when nothing is stored
-let unreadable = null;
-let writes = Promise.resolve();
+function encryptedStore(name, what) {
+  const storeFile = () => file(name);
+  let current; // undefined until load(); null when nothing is stored
+  let unreadable = null;
+  let writes = Promise.resolve();
 
-const unreadableError = () =>
-  Object.assign(new Error("The stored license can't be read (the system keychain refused, or the file is damaged)"), {
-    code: 'vault_unreadable',
-  });
+  const unreadableError = () =>
+    Object.assign(new Error(`The stored ${what} can't be read (the system keychain refused, or the file is damaged)`), {
+      code: 'vault_unreadable',
+    });
 
-export const vault = {
-  // Call once, after the app is ready and before anything reads the vault.
-  // Never throws: a vault that exists but can't be read makes get() throw
-  // rather than look like "no license".
-  async load() {
-    current = undefined;
-    unreadable = null;
-    let encrypted;
-    try {
-      encrypted = fs.readFileSync(vaultFile());
-    } catch (err) {
-      if (err.code === 'ENOENT') {
-        current = null;
+  const store = {
+    // Call once, after the app is ready and before anything reads the vault.
+    // Never throws: a vault that exists but can't be read makes get() throw
+    // rather than look like "no license".
+    async load() {
+      current = undefined;
+      unreadable = null;
+      let encrypted;
+      try {
+        encrypted = fs.readFileSync(storeFile());
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+          current = null;
+          return;
+        }
+        unreadable = err;
         return;
       }
-      unreadable = err;
-      return;
-    }
-    let decrypted;
-    try {
-      decrypted = await safeStorage.decryptStringAsync(encrypted);
-      current = JSON.parse(decrypted.result);
-    } catch {
-      unreadable = unreadableError();
-      return;
-    }
-    // The keychain's key has changed (rotated, or a stronger one is now
-    // available): save it again under the new one. If that fails, the old
-    // file still decrypts, so carry on.
-    if (decrypted.shouldReEncrypt) await vault.set(current).catch(() => {});
-  },
-  // null when nothing is stored. A copy, so changing it changes nothing.
-  get() {
-    if (unreadable) throw unreadable;
-    if (current === undefined) throw new Error('The vault was read before it was loaded');
-    return current === null ? null : structuredClone(current);
-  },
-  set(value) {
-    const copy = structuredClone(value);
-    const write = writes.then(async () => {
-      writeAtomic(vaultFile(), await safeStorage.encryptStringAsync(JSON.stringify(copy)));
-      current = copy;
-      unreadable = null;
-    });
-    writes = write.catch(() => {});
-    return write;
-  },
-  clear() {
-    const write = writes.then(() => {
-      fs.rmSync(vaultFile(), { force: true });
-      current = null;
-      unreadable = null;
-    });
-    writes = write.catch(() => {});
-    return write;
-  },
-};
+      let decrypted;
+      try {
+        decrypted = await safeStorage.decryptStringAsync(encrypted);
+        current = JSON.parse(decrypted.result);
+      } catch {
+        unreadable = unreadableError();
+        return;
+      }
+      // The keychain's key has changed (rotated, or a stronger one is now
+      // available): save it again under the new one. If that fails, the old
+      // file still decrypts, so carry on.
+      if (decrypted.shouldReEncrypt) await store.set(current).catch(() => {});
+    },
+    // null when nothing is stored. A copy, so changing it changes nothing.
+    get() {
+      if (unreadable) throw unreadable;
+      if (current === undefined) throw new Error('The vault was read before it was loaded');
+      return current === null ? null : structuredClone(current);
+    },
+    set(value) {
+      const copy = structuredClone(value);
+      const write = writes.then(async () => {
+        writeAtomic(storeFile(), await safeStorage.encryptStringAsync(JSON.stringify(copy)));
+        current = copy;
+        unreadable = null;
+      });
+      writes = write.catch(() => {});
+      return write;
+    },
+    clear() {
+      const write = writes.then(() => {
+        fs.rmSync(storeFile(), { force: true });
+        current = null;
+        unreadable = null;
+      });
+      writes = write.catch(() => {});
+      return write;
+    },
+  };
+  return store;
+}
+
+export const vault = encryptedStore('license.bin', 'license');
+
+// The newest key set seen for each server, by issuer origin:
+// { "https://demo-license-api.casazium.com": { payload, root_key_id, signature } }
+export const keySetVault = encryptedStore('key-sets.bin', 'key sets');

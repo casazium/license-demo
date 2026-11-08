@@ -4,16 +4,20 @@
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { app, BrowserWindow, ipcMain, Menu, net, session, shell } from 'electron';
-import { CasaziumLicenseClient } from '@casazium/license-sdk';
+import fs from 'node:fs';
+import { CASAZIUM_HOSTED_ROOT_KEYS, CasaziumLicenseClient } from '@casazium/license-sdk';
 import { createLicensing } from './licensing.js';
 import { createRecordingFetch } from './calls.js';
 import { appInstanceId } from './machine-id.js';
-import { DEFAULT_SETTINGS, secretStorageProtected, settings, state, vault } from './store.js';
+import { DEFAULT_SETTINGS, keySetVault, secretStorageProtected, settings, state, vault } from './store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 // Tests run the app against a throwaway data folder, never a real install.
 if (process.env.LICENSE_DEMO_USER_DATA) app.setPath('userData', process.env.LICENSE_DEMO_USER_DATA);
+// The key sets of the Casazium-hosted servers, saved at build time by
+// scripts/update-key-sets.mjs.
+const BUILT_IN_KEY_SETS = JSON.parse(fs.readFileSync(path.join(here, 'key-sets.json'), 'utf8'));
 const INDEX = path.join(here, '..', 'renderer', 'index.html');
 const INDEX_URL = pathToFileURL(INDEX).href;
 
@@ -43,9 +47,15 @@ const licensing = createLicensing({
   createClient: (options) => new CasaziumLicenseClient({ fetch: recordingFetch, ...options }),
   vault,
   state,
-  // A real app passes its server's public key here (builtInPublicKey), so
-  // the offline check trusts nothing it downloads. This demo can point at
-  // any server, so it fetches the key once and pins it instead.
+  // On the hosted servers, files are checked against the server's signed
+  // key set, trusted through the root keys built into the SDK: the setup a
+  // real app on SDK 0.6.0 uses, and it survives a replacement of the
+  // server's signing key without a new build. Pointed at any other server
+  // (your own, say), this demo fetches its public key once and pins it
+  // instead (DEMO ONLY; a real app ships its key or its own roots).
+  rootKeys: CASAZIUM_HOSTED_ROOT_KEYS,
+  builtInKeySets: BUILT_IN_KEY_SETS,
+  keySetStore: keySetVault,
   builtInPublicKey: null,
   settings: () => settings.get(),
   instanceId: () => appInstanceId(settings.get().productUuid),
@@ -219,6 +229,7 @@ app.on('web-contents-created', (_event, contents) => {
 app.whenReady().then(async () => {
   // Decrypt the stored license once, before anything reads it.
   await vault.load();
+  await keySetVault.load();
   // The app needs no camera, microphone, notifications or anything else a
   // page can ask for.
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

@@ -3,7 +3,8 @@
 This app is a small, real integration of
 [Casazium License Server](https://casazium.com) through its public SDK,
 [`@casazium/license-sdk`](https://www.npmjs.com/package/@casazium/license-sdk)
-(0.5.0 or later, which needs License Server 1.21.0 or later). Everything
+(0.6.0 or later, which needs License Server 1.35.0 or later for its key
+sets). Everything
 below maps to code you can copy. The parts that only exist so one computer can show what several would are marked
 **demo only** - leave them out of a real app.
 
@@ -15,7 +16,7 @@ below maps to code you can copy. The parts that only exist so one computer can s
 - [Usage limits](#usage-limits)
 - [Errors: refused or unreachable?](#errors-refused-or-unreachable)
 - [Storage](#storage)
-- [The public key](#the-public-key)
+- [Signing keys](#signing-keys)
 - [The call log](#the-call-log)
 - [Demo only: other machines, and the demo keys](#demo-only-other-machines-and-the-demo-keys)
 - [Taking it into your app](#taking-it-into-your-app)
@@ -27,7 +28,8 @@ below maps to code you can copy. The parts that only exist so one computer can s
 | [`main/licensing.js`](../main/licensing.js) | main process | **All of the licensing.** No Electron in it: its storage, machine id and `fetch` are passed in, so it can be read and tested on its own. |
 | [`main/calls.js`](../main/calls.js) | main process | The `fetch` the SDK calls through (a timeout, and the call log), and `classifyError`. |
 | [`main/main.js`](../main/main.js) | main process | The window and its security settings, and the handlers the page can call. |
-| [`main/store.js`](../main/store.js) | main process | Encrypted storage for the license, plain JSON for settings. |
+| [`main/store.js`](../main/store.js) | main process | Encrypted storage for the license and the key sets, plain JSON for settings. |
+| [`main/key-sets.json`](../main/key-sets.json) | main process | The hosted servers' key sets, saved at build time by [`scripts/update-key-sets.mjs`](../scripts/update-key-sets.mjs). |
 | [`main/machine-id.js`](../main/machine-id.js) | main process | This machine's id, for this app. |
 | [`preload/preload.cjs`](../preload/preload.cjs) | preload | The only calls the page can make. |
 | [`renderer/`](../renderer) | page | Shows state and sends button presses. Makes no licensing decisions. |
@@ -180,7 +182,9 @@ Everything the license decision depends on - the key, the activation
 token, the offline file (which contains the key), the pinned public key,
 and when the app last checked online - is kept together, **encrypted with
 Electron's `safeStorage`** (the system keychain). Editing a file on disk
-can't forge a pass, and the key isn't readable on disk. Writes go to a
+can't forge a pass, and the key isn't readable on disk. The newest key
+set seen for each server is encrypted the same way, in a file of its own,
+so deactivating a license doesn't forget it. Writes go to a
 temporary file and are renamed into place, so a crash never leaves a torn
 file.
 
@@ -203,17 +207,38 @@ Plain JSON holds only settings and the demo server's public `seed.json`.
 Licensing actions run one at a time in the main process, and the page
 ignores clicks while one is running, so two presses can't interleave.
 
-## The public key
+## Signing keys
 
-Offline files are verified with the server's public key. **A real app
-ships it** and passes it as `builtInPublicKey` (in `main.js`), so the
-offline check trusts nothing it downloads. Fetch it once from your server
-(`GET /v1/public-key`) while you build the app.
+Offline files are signed by the server. To check them, the app needs to
+know which signing keys to trust, without trusting whatever it downloads.
 
-This demo can point at any server, so it fetches the key on first use
-and pins it instead - **demo only**. If the server's key later changes, it
-says so: offline files signed with the old key stop verifying, and an
-unexpected change can mean the app is talking to a different server.
+**On the Casazium-hosted servers it uses key sets** (SDK 0.6.0, License
+Server 1.35.0). Each server publishes a list of its signing keys
+(`GET /v1/signing-keys`), each marked active, next or revoked, signed with
+root keys kept offline. The SDK has those roots
+built in (`CASAZIUM_HOSTED_ROOT_KEYS`), and the app passes them with the
+set saved at build time (`main/key-sets.json`) and somewhere to keep newer
+ones (`keySetStore`, encrypted). The SDK only ever moves to a newer set
+that verifies. The launch check fetches the current set, and the SDK also
+refreshes it in the background and learns of new sets from exported
+files. If the server ever has to replace its signing key (after a leak,
+say), the app follows without a new build and stops accepting the
+replaced key. The Server panel shows the set in use.
+
+Run `node scripts/update-key-sets.mjs` before every release, so a new
+install starts from the current set. What key sets can't do: an app on a
+machine whose owner blocks every refresh, and never imports a new file,
+keeps trusting the keys it last saw - which is why the launch check still
+asks the server, and the offline file is only good for
+`MAX_DAYS_OFFLINE`.
+
+**Pointed at any other server** (your own, say), the app has no key set
+for it, so it fetches the server's public key on first use and pins it -
+**demo only**. If that key later changes, it says so: offline files signed
+with the old key stop verifying, and an unexpected change can mean the app
+is talking to a different server. A real app ships its server's public
+key as `builtInPublicKey`, or, for a self-hosted server with its own
+roots, passes those roots and its key set the same way.
 
 ## The call log
 
@@ -255,9 +280,12 @@ work on two machines.
 
 1. **Copy `main/licensing.js` and `main/calls.js`.** Delete the sections
    marked DEMO ONLY.
-2. **Pass your server's public key** as `builtInPublicKey`, and your
-   product's UUID (it's in the response to your first `issue-license`, and
-   on the license's page in the console).
+2. **Ship your server's key set** (`scripts/update-key-sets.mjs`, with
+   your server's URL) and pass it with `CASAZIUM_HOSTED_ROOT_KEYS` as
+   `rootKeys` and `builtInKeySets`, plus encrypted storage as
+   `keySetStore`; or, on a server without key sets, its public key as
+   `builtInPublicKey`. And your product's UUID (it's in the response to
+   your first `issue-license`, and on the license's page in the console).
 3. **Read the server URL from configuration**, so moving between hosted
    and your own server isn't a new release.
 4. **Choose your `MAX_DAYS_OFFLINE`.**

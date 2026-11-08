@@ -39,12 +39,16 @@ When the server says no - revoked, expired, or this machine's seat freed
 elsewhere - the app drops the file, so going offline can't undo it. And
 every good online check refreshes the file.
 
-### The public key
+### Signing keys
 
-A real app ships its server's public key and passes it as
-`builtInPublicKey` (`main/main.js`), so the offline check trusts nothing it
-downloads. This demo can point at any server, so it fetches the key once
-and pins it instead, and warns if the server's key later changes.
+On the Casazium-hosted servers the app checks offline files against the
+server's **signed key set** (SDK 0.6.0), trusted through root keys built
+into the SDK, with the current set shipped in the app
+(`main/key-sets.json`). If the server ever has to replace its signing
+key, the app follows it without a new build, and stops accepting the
+replaced key. Pointed at a server of your own, the demo fetches that
+server's public key once and pins it instead (demo only), and warns if it
+later changes.
 
 ## Run it
 
@@ -107,7 +111,7 @@ belong on a server you control.
 Everything the license decision depends on - the key, the activation
 token, the offline file, the pinned public key and when the app last
 checked online - is stored encrypted with Electron's `safeStorage` (the
-system keychain). On Linux without a keychain the app says it can't
+system keychain), and so are the newest key sets it has seen. On Linux without a keychain the app says it can't
 protect them. Plain JSON holds only settings and the demo server's
 public `seed.json`.
 
