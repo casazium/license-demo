@@ -50,6 +50,18 @@ const LAUNCH_TEXT = {
   no_key: ['muted', 'No license on this machine yet. Paste a key and activate.'],
 };
 
+// How the app decides a license file is genuine, for the Server panel.
+const TRUST_TEXT = {
+  key_set: (t) =>
+    `License files are checked against this server's signed key set (version ${t.sequence}, ` +
+    `signing key ${t.activeKeyId}), trusted through root keys built into the app. ` +
+    'If the server ever replaces its signing key, the app follows it without an update.',
+  built_in_key: () => "License files are checked with the server's public key, built into the app.",
+  pinned: () =>
+    "This app has no key set for this server, so it pinned the server's public key the first time it " +
+    'saw it (demo only: a real app ships its key, or its server\'s root keys).',
+};
+
 async function refreshStatus() {
   const res = await licensing.status();
   if (!res.ok) return show($('license-state'), 'bad', [res.error]);
@@ -60,6 +72,7 @@ async function refreshStatus() {
   $('storage-note').textContent = s.secretsProtected
     ? 'The key and token are stored in the system keychain.'
     : 'No system keychain here: the key and token are stored, but not protected.';
+  $('trust-note').textContent = TRUST_TEXT[s.trust?.mode]?.(s.trust) ?? '';
   // The summary lines describe what's stored; the state boxes below them
   // show the result of the last action, and are left alone here.
   $('license-summary').textContent = s.hasKey
@@ -86,6 +99,7 @@ const OFFLINE_REASONS = {
   no_public_key: "The server's public key isn't known yet, so the file can't be checked.",
   file_refused: "The license file doesn't verify: its signature, product or expiry is wrong.",
   offline_too_long: 'The app has been offline too long. Connect to the internet to check the license.',
+  verifier_error: "The app couldn't check the file: the key set built into it doesn't verify. That's a build error; a new build fixes it.",
 };
 
 async function launchCheck() {
@@ -105,7 +119,14 @@ async function launchCheck() {
     show($('license-state'), 'warn', ['This demo key was reset: demo keys last a day. Get a new one.']);
   } else {
     const [kind, text] = LAUNCH_TEXT[r.state] ?? ['bad', r.state];
-    show($('license-state'), kind, [text, describeLicense(r.license), r.message]);
+    show($('license-state'), r.keySetError ? 'warn' : kind, [
+      text,
+      describeLicense(r.license),
+      r.message,
+      r.keySetUpdated ? 'The server published a new key set; the app now uses it.' : null,
+      r.offlineFileDropped ? "The saved license file was signed with a key the server has replaced, and a new one couldn't be saved; the next good check saves one." : null,
+      r.keySetError ? `The key set built into this app doesn't verify (${r.keySetError}), so license files can't be checked offline. That's a build error; a new build fixes it.` : null,
+    ]);
   }
   await refreshStatus();
 }
@@ -199,7 +220,7 @@ $('verify-offline').addEventListener('click', async () => {
   const r = res.value;
   show($('offline-state'), r.valid ? 'good' : 'bad', [
     r.valid ? 'Verified offline: signature, product and expiry all check out.' : `Doesn't verify${r.reason ? ` (${r.reason})` : ''}.`,
-    'Checked against the public key alone - no network call.',
+    'Checked on this machine against the server\'s signing keys - no server needed.',
     r.clockWentBack ? "This machine's clock has gone backwards since the last check." : null,
   ]);
 });
@@ -293,8 +314,10 @@ function describeTry(r) {
   }[r.online.state];
   const offline = r.offline
     ? r.offline.valid
-      ? 'Offline: its license file still verifies, with the public key alone.'
-      : 'Offline: its license file is refused.'
+      ? 'Offline: its license file still verifies, with no server needed.'
+      : r.offline.error
+        ? `Offline: the file couldn't be checked (${r.offline.error}).`
+        : 'Offline: its license file is refused.'
     : null;
   const kind = r.online.state === 'ok' && (!r.offline || r.offline.valid) ? 'good' : r.offline?.valid ? 'warn' : 'bad';
   return [kind, [`The ${r.kind} key (${r.keyHint}).`, online, offline]];
