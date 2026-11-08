@@ -47,7 +47,8 @@ const DAY = 24 * 60 * 60 * 1000;
  *   for each issuer origin (GET /v1/signing-keys, saved at build time)
  * @param {object} [deps.keySetStore] - encrypted storage for the newest key
  *   set seen per issuer, kept when a license is deactivated:
- *   { get(): object | null, set(object): Promise }
+ *   { get(): object | null, update(fn): Promise } - update(fn) saves
+ *   fn(what's stored), in the store's own queue of writes
  * @param {string|null} [deps.builtInPublicKey] - your server's public key,
  *   shipped in the app: the setup before SDK 0.6.0. When it's null and the
  *   server has no key set built in (this demo pointed at a server of your
@@ -115,7 +116,9 @@ export function createLicensing({
       // replaced key.
       keySetStore: {
         get: () => keySetStore?.get()?.[issuer] ?? null,
-        set: (doc) => keySetStore?.set({ ...keySetStore.get(), [issuer]: doc }),
+        // Merged inside the store's queue, so two issuers saving at once
+        // can't drop one another's set.
+        set: (doc) => keySetStore?.update((all) => ({ ...(all ?? {}), [issuer]: doc })),
       },
     };
   }
@@ -216,7 +219,16 @@ export function createLicensing({
     if (saved.offlineFile.license?.key !== saved.key) return { valid: false, reason: 'not_this_key' };
     const verifier = await fileVerifier();
     if (!verifier) return { valid: false, reason: 'no_public_key' };
-    if (!(await verifier.verifySignedFile(saved.offlineFile, productUuid()).catch(() => false))) {
+    let authentic;
+    try {
+      authentic = await verifier.verifySignedFile(saved.offlineFile, productUuid());
+    } catch (err) {
+      // Not a refused file: the check itself couldn't run. With a key set,
+      // that means the set built into the app doesn't verify - a build
+      // error, which a new build fixes.
+      return { valid: false, reason: 'verifier_error', message: err.message, file: describeFile(saved.offlineFile) };
+    }
+    if (!authentic) {
       return { valid: false, reason: 'file_refused', file: describeFile(saved.offlineFile) };
     }
     const offlineFor = current - (saved.lastCheckedAt ?? 0);
@@ -294,6 +306,9 @@ export function createLicensing({
     if (offline) return { state: 'offline', forced: true, ...(await verifyOffline()) };
     requireProduct();
     const { key } = record();
+    // To tell whether this check brings a newer key set: the SDK may take
+    // one in the background as soon as the server answers.
+    const sequenceBefore = trustMode() === 'key_set' ? heldKeySet()?.sequence : null;
     try {
       const license = await client().verifyKey(key, productUuid());
       const { valid } = await client().validate(key, instanceId());
@@ -306,14 +321,36 @@ export function createLicensing({
       }
       await update({ lastCheckedAt: now(), lastSeenAt: Math.max(now(), record().lastSeenAt ?? 0) });
       // Refresh the file, so its expiry and terms follow the server's.
-      await exportOffline().catch(() => {});
+      const exported = await exportOffline().then(
+        () => true,
+        () => false
+      );
       // The server answered, so this is the time to learn of a changed
       // signing key, before an offline check relies on the old one. With a
-      // key set, fetch the server's current set (the SDK keeps it only if
-      // it verifies and is newer); without one, compare the pinned key.
+      // key set: make sure the server's current set has been fetched (the
+      // SDK starts that in the background once the server answers, and
+      // keeps a set only if it verifies and is newer); without one, compare
+      // the pinned key.
       if (trustMode() === 'key_set') {
-        const keySet = await client().refreshKeySet({ force: true });
-        return { state: 'ok', license: describeLicense(license), publicKeyChanged: false, keySetUpdated: keySet.updated };
+        const result = { state: 'ok', license: describeLicense(license), publicKeyChanged: false };
+        try {
+          await client().refreshKeySet();
+        } catch (err) {
+          // Only a built-in set that doesn't verify makes this throw. The
+          // license is still good; say what's wrong rather than "offline".
+          return { ...result, keySetError: err.message };
+        }
+        result.keySetUpdated = (heldKeySet()?.sequence ?? 0) > (sequenceBefore ?? 0);
+        // A new set may revoke the key that signed the file kept here; if
+        // no fresh file could be saved, don't keep one that won't verify.
+        if (!exported && record().offlineFile) {
+          const check = await verifyOffline();
+          if (check.reason === 'file_refused') {
+            await update({ offlineFile: null });
+            result.offlineFileDropped = true;
+          }
+        }
+        return result;
       }
       const publicKeyChanged = !(await checkPublicKeyUnchanged().catch(() => true));
       return { state: 'ok', license: describeLicense(license), publicKeyChanged };
@@ -379,10 +416,10 @@ export function createLicensing({
     };
   }
 
-  // For the Server panel: how this app decides a license file is genuine.
-  function describeTrust() {
-    const mode = trustMode();
-    if (mode !== 'key_set') return { mode };
+  // The key set in use for this server, read for display: the newer of
+  // the built-in set and the one stored since. The SDK decides which set
+  // it trusts, and stores only sets that verify.
+  function heldKeySet() {
     const issuer = issuerOf(settings().serverUrl);
     let stored = null;
     try {
@@ -392,11 +429,15 @@ export function createLicensing({
     }
     const builtIn = keySetSummary(builtInKeySets[issuer]);
     const seen = keySetSummary(stored);
-    // Display only: the SDK decides which set it trusts, and it never takes
-    // one that doesn't verify. A stored set is newer than the built-in one
-    // whenever it was saved, since the SDK saves only newer sets.
-    const current = seen && builtIn && seen.sequence > builtIn.sequence ? seen : builtIn;
-    return { mode, issuer, ...current, builtInSequence: builtIn?.sequence ?? null };
+    return seen && builtIn && seen.sequence > builtIn.sequence ? seen : builtIn;
+  }
+
+  // For the Server panel: how this app decides a license file is genuine.
+  function describeTrust() {
+    const mode = trustMode();
+    if (mode !== 'key_set') return { mode };
+    const issuer = issuerOf(settings().serverUrl);
+    return { mode, issuer, ...heldKeySet(), builtInSequence: keySetSummary(builtInKeySets[issuer])?.sequence ?? null };
   }
 
   // --- Seats - DEMO ONLY ------------------------------------------------
@@ -494,7 +535,11 @@ export function createLicensing({
   // The helper publishes a fingerprint of the server's public key, from a
   // separate host: a second way to notice the app is talking to a
   // different server than the demo's.
+  // Not used with a key set: the signed set already ties the keys to the
+  // server, and while a replaced key is being re-seeded the fingerprint
+  // would warn for nothing.
   async function seedKeyMatchesServer() {
+    if (trustMode() === 'key_set') return null;
     const seed = state.get().seed;
     if (!seed?.public_key_sha256) return null;
     const serverKey = await client().getPublicKey();
@@ -522,10 +567,12 @@ export function createLicensing({
     let offline = null;
     if (entry.offline_file) {
       const verifier = await fileVerifier();
-      offline = {
-        valid: verifier ? await verifier.verifySignedFile(entry.offline_file, seed.product_uuid).catch(() => false) : false,
-        file: describeFile(entry.offline_file),
-      };
+      offline = { valid: false, file: describeFile(entry.offline_file) };
+      try {
+        offline.valid = verifier ? await verifier.verifySignedFile(entry.offline_file, seed.product_uuid) : false;
+      } catch (err) {
+        offline.error = err.message;
+      }
     }
     return { kind, keyHint: `…${entry.key.slice(-4)}`, online, offline };
   }

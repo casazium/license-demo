@@ -7,6 +7,12 @@ const BUILT_IN = JSON.parse(fs.readFileSync(new URL('../main/key-sets.json', imp
 const DEMO = 'https://demo-license-api.casazium.com';
 const PRODUCT = 'product-uuid-1';
 const payloadOf = (doc) => JSON.parse(Buffer.from(doc.payload, 'base64').toString('utf8'));
+// A copy of a set with another sequence: for display tests only (its
+// signature no longer matches).
+const withSequence = (doc, sequence) => ({
+  ...doc,
+  payload: Buffer.from(JSON.stringify({ ...payloadOf(doc), sequence })).toString('base64'),
+});
 
 describe('the key sets shipped in main/key-sets.json', () => {
   test('cover the demo server', () => {
@@ -52,6 +58,10 @@ function memoryStore() {
     set: async (v) => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       value = structuredClone(v);
+    },
+    update: async (fn) => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      value = structuredClone(fn(value === null ? null : structuredClone(value)));
     },
     clear: async () => {
       value = null;
@@ -116,20 +126,50 @@ describe('on a server with a built-in key set', () => {
     expect(keySetStore.get()).toEqual({ 'https://other.example': { payload: 'x' }, [DEMO]: { payload: 'newer' } });
   });
 
-  test('the launch check fetches the current set, and never pins or compares a public key', async () => {
-    const { licensing, calls } = setup({ overrides: {} });
+  test('the launch check waits for the current set, and never pins or compares a public key', async () => {
+    const { licensing, calls } = setup();
     await licensing.activate('KEY-1');
     calls.length = 0;
     const result = await licensing.launchCheck();
     expect(result).toMatchObject({ state: 'ok', publicKeyChanged: false, keySetUpdated: false });
-    expect(calls).toContainEqual(['refreshKeySet', { force: true }]);
+    expect(calls).toContainEqual(['refreshKeySet', undefined]);
     expect(calls).not.toContain('getPublicKey');
   });
 
-  test('reports a newer set', async () => {
-    const { licensing } = setup({ overrides: { refreshKeySet: async () => ({ updated: true }) } });
+  test('reports a newer set, however the SDK learned of it during the check', async () => {
+    const ctx = setup();
+    const newer = withSequence(BUILT_IN[DEMO], payloadOf(BUILT_IN[DEMO]).sequence + 1);
+    // As if the SDK took it from the export or a background refresh, before
+    // the launch check's own refresh call.
+    await ctx.licensing.activate('KEY-1');
+    ctx.client.verifyKey = async () => {
+      await ctx.created[0].keySetStore.set(newer);
+      return { valid: true };
+    };
+    expect((await ctx.licensing.launchCheck()).keySetUpdated).toBe(true);
+  });
+
+  test('a built-in set that does not verify: the license is still good, and the error is named', async () => {
+    const { licensing } = setup({
+      overrides: {
+        refreshKeySet: async () => {
+          throw new Error('key set: root signature does not verify');
+        },
+      },
+    });
     await licensing.activate('KEY-1');
-    expect((await licensing.launchCheck()).keySetUpdated).toBe(true);
+    expect(await licensing.launchCheck()).toMatchObject({ state: 'ok', keySetError: 'key set: root signature does not verify' });
+  });
+
+  test("a saved file that no longer verifies is dropped when a fresh one couldn't be saved", async () => {
+    const ctx = setup();
+    await ctx.licensing.activate('KEY-1');
+    ctx.client.exportOfflineLicense = async () => {
+      throw new Error('export failed');
+    };
+    ctx.client.verifySignedFile = async () => false;
+    expect(await ctx.licensing.launchCheck()).toMatchObject({ state: 'ok', offlineFileDropped: true });
+    expect(ctx.vault.get().offlineFile).toBeNull();
   });
 
   test('the offline file is verified by the key-set client, with no public key fetched', async () => {
@@ -141,7 +181,7 @@ describe('on a server with a built-in key set', () => {
     expect(created).toHaveLength(1);
   });
 
-  test('a file the SDK refuses, or a check that throws, is not valid', async () => {
+  test('a file the SDK refuses is refused; a check that throws says so', async () => {
     const refused = setup({ overrides: { verifySignedFile: async () => false } });
     await refused.licensing.activate('KEY-1');
     expect(await refused.licensing.verifyOffline()).toMatchObject({ valid: false, reason: 'file_refused' });
@@ -153,7 +193,17 @@ describe('on a server with a built-in key set', () => {
       },
     });
     await broken.licensing.activate('KEY-1');
-    expect(await broken.licensing.verifyOffline()).toMatchObject({ valid: false, reason: 'file_refused' });
+    expect(await broken.licensing.verifyOffline()).toMatchObject({
+      valid: false,
+      reason: 'verifier_error',
+      message: 'built-in key set does not verify',
+    });
+  });
+
+  test("the seed's public-key fingerprint isn't used", async () => {
+    const { licensing, calls } = setup();
+    expect(await licensing.seedKeyMatchesServer()).toBeNull();
+    expect(calls).not.toContain('getPublicKey');
   });
 
   test('there is no key to pin', async () => {
@@ -181,12 +231,10 @@ describe('on a server with a built-in key set', () => {
       sequence: builtIn.sequence,
       activeKeyId: builtIn.keys.find((k) => k.status === 'active').key_id,
     });
-    const newer = { ...builtIn, sequence: builtIn.sequence + 1 };
-    await keySetStore.set({ [DEMO]: { ...BUILT_IN[DEMO], payload: Buffer.from(JSON.stringify(newer)).toString('base64') } });
+    await keySetStore.set({ [DEMO]: withSequence(BUILT_IN[DEMO], builtIn.sequence + 1) });
     expect(licensing.status().trust.sequence).toBe(builtIn.sequence + 1);
     // An older stored set (from an earlier build) doesn't win.
-    const older = { ...builtIn, sequence: builtIn.sequence - 1 };
-    await keySetStore.set({ [DEMO]: { ...BUILT_IN[DEMO], payload: Buffer.from(JSON.stringify(older)).toString('base64') } });
+    await keySetStore.set({ [DEMO]: withSequence(BUILT_IN[DEMO], builtIn.sequence - 1) });
     expect(licensing.status().trust.sequence).toBe(builtIn.sequence);
   });
 });

@@ -46,7 +46,7 @@ server's **signed key set** (SDK 0.6.0), trusted through root keys built
 into the SDK, with the current set shipped in the app
 (`main/key-sets.json`). If the server ever has to replace its signing
 key, the app follows it without a new build, and stops accepting the
-replaced key. Pointed at a server of your own, the demo fetches that
+replaced key once it has seen the new set. Pointed at a server of your own, the demo fetches that
 server's public key once and pins it instead (demo only), and warns if it
 later changes.
 

@@ -218,27 +218,28 @@ Server 1.35.0). Each server publishes a list of its signing keys
 root keys kept offline. The SDK has those roots
 built in (`CASAZIUM_HOSTED_ROOT_KEYS`), and the app passes them with the
 set saved at build time (`main/key-sets.json`) and somewhere to keep newer
-ones (`keySetStore`, encrypted). The SDK only ever moves to a newer set
-that verifies. The launch check fetches the current set, and the SDK also
-refreshes it in the background and learns of new sets from exported
-files. If the server ever has to replace its signing key (after a leak,
+ones (`keySetStore`, encrypted). The SDK takes a set only if it verifies,
+and never goes back to an older one it has been offered. The launch check
+makes sure the current set has been fetched, and the SDK also refreshes it
+in the background and learns of new sets from exported files. If the server ever has to replace its signing key (after a leak,
 say), the app follows without a new build and stops accepting the
 replaced key. The Server panel shows the set in use.
 
 Run `node scripts/update-key-sets.mjs` before every release, so a new
 install starts from the current set. What key sets can't do: an app on a
 machine whose owner blocks every refresh, and never imports a new file,
-keeps trusting the keys it last saw - which is why the launch check still
-asks the server, and the offline file is only good for
-`MAX_DAYS_OFFLINE`.
+keeps trusting the keys it last saw, and that owner can also restore an
+older copy of the stored set. That's why the launch check still asks the
+server, and the offline file is only good for `MAX_DAYS_OFFLINE`.
 
 **Pointed at any other server** (your own, say), the app has no key set
 for it, so it fetches the server's public key on first use and pins it -
 **demo only**. If that key later changes, it says so: offline files signed
 with the old key stop verifying, and an unexpected change can mean the app
-is talking to a different server. A real app ships its server's public
-key as `builtInPublicKey`, or, for a self-hosted server with its own
-roots, passes those roots and its key set the same way.
+is talking to a different server. A real app on a server without key sets
+ships that server's public key as `builtInPublicKey`. Key sets are
+available on the Casazium-hosted servers today; self-hosted servers can't
+make them yet.
 
 ## The call log
 
@@ -280,11 +281,12 @@ work on two machines.
 
 1. **Copy `main/licensing.js` and `main/calls.js`.** Delete the sections
    marked DEMO ONLY.
-2. **Ship your server's key set** (`scripts/update-key-sets.mjs`, with
-   your server's URL) and pass it with `CASAZIUM_HOSTED_ROOT_KEYS` as
-   `rootKeys` and `builtInKeySets`, plus encrypted storage as
-   `keySetStore`; or, on a server without key sets, its public key as
-   `builtInPublicKey`. And your product's UUID (it's in the response to
+2. **On a Casazium-hosted server, ship its key set**: list your server in
+   `scripts/update-key-sets.mjs` (its `SERVERS` are the hosted origins
+   `CASAZIUM_HOSTED_ROOT_KEYS` has roots for), and pass the saved sets as
+   `builtInKeySets` with `CASAZIUM_HOSTED_ROOT_KEYS` as `rootKeys`, plus
+   encrypted storage as `keySetStore`. On a self-hosted server, ship its
+   public key as `builtInPublicKey`. And your product's UUID (it's in the response to
    your first `issue-license`, and on the license's page in the console).
 3. **Read the server URL from configuration**, so moving between hosted
    and your own server isn't a new release.

@@ -9,8 +9,10 @@
 // The key sets learned from the server are encrypted the same way, in a
 // file of their own, because they outlive a license: deactivating clears
 // the vault, and a newer key set must not be forgotten with it. A set is
-// public and signed, but swapping in an older one would bring back a key
-// the server has since revoked.
+// public and signed, so the encryption isn't what makes it trustworthy;
+// it just keeps the file from being casually edited. Someone who controls
+// the machine can still restore an older copy, or delete it, and the app
+// falls back to an older set until it next reaches the server.
 //
 // Plain JSON in the app's user-data folder holds only the settings and the
 // demo server's seed.json, which is public.
@@ -123,6 +125,20 @@ function encryptedStore(name, what) {
       const write = writes.then(async () => {
         writeAtomic(storeFile(), await safeStorage.encryptStringAsync(JSON.stringify(copy)));
         current = copy;
+        unreadable = null;
+      });
+      writes = write.catch(() => {});
+      return write;
+    },
+    // Saves fn(what's stored) in the queue of writes, so the read and the
+    // write can't be split by another write. A store that can't be read
+    // is replaced, rather than left unwritable.
+    update(fn) {
+      const write = writes.then(async () => {
+        const base = unreadable || current === undefined ? null : structuredClone(current);
+        const next = structuredClone(fn(base));
+        writeAtomic(storeFile(), await safeStorage.encryptStringAsync(JSON.stringify(next)));
+        current = next;
         unreadable = null;
       });
       writes = write.catch(() => {});

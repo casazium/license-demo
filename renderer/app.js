@@ -54,7 +54,7 @@ const LAUNCH_TEXT = {
 const TRUST_TEXT = {
   key_set: (t) =>
     `License files are checked against this server's signed key set (version ${t.sequence}, ` +
-    `signing key ${t.activeKeyId?.slice(0, 16)}…), trusted through root keys built into the app. ` +
+    `signing key ${t.activeKeyId}), trusted through root keys built into the app. ` +
     'If the server ever replaces its signing key, the app follows it without an update.',
   built_in_key: () => "License files are checked with the server's public key, built into the app.",
   pinned: () =>
@@ -99,6 +99,7 @@ const OFFLINE_REASONS = {
   no_public_key: "The server's public key isn't known yet, so the file can't be checked.",
   file_refused: "The license file doesn't verify: its signature, product or expiry is wrong.",
   offline_too_long: 'The app has been offline too long. Connect to the internet to check the license.',
+  verifier_error: "The app couldn't check the file: the key set built into it doesn't verify. That's a build error; a new build fixes it.",
 };
 
 async function launchCheck() {
@@ -118,8 +119,14 @@ async function launchCheck() {
     show($('license-state'), 'warn', ['This demo key was reset: demo keys last a day. Get a new one.']);
   } else {
     const [kind, text] = LAUNCH_TEXT[r.state] ?? ['bad', r.state];
-    const keySetNote = r.keySetUpdated ? 'The server published a new key set; the app now uses it.' : null;
-    show($('license-state'), kind, [text, describeLicense(r.license), r.message, keySetNote]);
+    show($('license-state'), r.keySetError ? 'warn' : kind, [
+      text,
+      describeLicense(r.license),
+      r.message,
+      r.keySetUpdated ? 'The server published a new key set; the app now uses it.' : null,
+      r.offlineFileDropped ? "The saved license file was signed with a key the server has replaced, and a new one couldn't be saved; the next good check saves one." : null,
+      r.keySetError ? `The key set built into this app doesn't verify (${r.keySetError}), so license files can't be checked offline. That's a build error; a new build fixes it.` : null,
+    ]);
   }
   await refreshStatus();
 }
@@ -308,7 +315,9 @@ function describeTry(r) {
   const offline = r.offline
     ? r.offline.valid
       ? 'Offline: its license file still verifies, with no server needed.'
-      : 'Offline: its license file is refused.'
+      : r.offline.error
+        ? `Offline: the file couldn't be checked (${r.offline.error}).`
+        : 'Offline: its license file is refused.'
     : null;
   const kind = r.online.state === 'ok' && (!r.offline || r.offline.valid) ? 'good' : r.offline?.valid ? 'warn' : 'bad';
   return [kind, [`The ${r.kind} key (${r.keyHint}).`, online, offline]];
